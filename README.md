@@ -1,17 +1,20 @@
 # Tuvima.WikidataReconciliation
 
-A .NET library for reconciling data against Wikidata entities. The first .NET Wikidata reconciliation library.
+A .NET library for reconciling text data against [Wikidata](https://www.wikidata.org/) entities. Given a name, title, or description, it finds the best-matching Wikidata item and returns a confidence score.
 
-## Features
+This is the first .NET Wikidata reconciliation library, filling a gap in the ecosystem where only Python and JavaScript implementations previously existed.
 
-- **Dual search**: Uses both `wbsearchentities` (label/alias autocomplete) and `action=query&list=search` (full-text) concurrently, then merges results. This finds items like "1984" (the novel) that label-only search misses.
-- **Fuzzy matching**: Token-sort-ratio using Levenshtein distance with Unicode normalization.
-- **Property-based scoring**: Weighted scoring with support for string, item, quantity, time, URL, coordinate, and external-id matching.
-- **Type filtering**: Filter by P31 (instance of) with support for type exclusion.
-- **Rank-aware**: Respects Wikidata statement ranks (preferred > normal > deprecated).
-- **Custom Wikibase support**: Configurable API endpoint and type/subclass property IDs.
-- **Zero dependencies**: Only requires `System.Text.Json` (built into .NET).
-- **AOT compatible**: Source-generated JSON serialization for trimming and AOT support.
+## What is Reconciliation?
+
+Reconciliation is the process of matching messy, real-world text (like "Douglas Adams" or "1984") to structured entities in a knowledge base. For example:
+
+| Input text | Matched entity | QID | Score |
+|---|---|---|---|
+| `"Douglas Adams"` | Douglas Adams | [Q42](https://www.wikidata.org/wiki/Q42) | 100 |
+| `"United States of America"` | United States of America | [Q30](https://www.wikidata.org/wiki/Q30) | 100 |
+| `"1984"` (with type: literary work) | Nineteen Eighty-Four | [Q208460](https://www.wikidata.org/wiki/Q208460) | 67 |
+
+This is useful for data cleaning, entity linking, knowledge graph construction, and enriching datasets with structured Wikidata identifiers.
 
 ## Installation
 
@@ -19,35 +22,128 @@ A .NET library for reconciling data against Wikidata entities. The first .NET Wi
 dotnet add package Tuvima.WikidataReconciliation
 ```
 
+**Targets:** .NET 8.0 (LTS) and .NET 10.0
+
+**Dependencies:** None beyond `System.Text.Json` (built into .NET).
+
 ## Quick Start
 
 ```csharp
 using Tuvima.WikidataReconciliation;
 
-// Simple reconciliation
 using var reconciler = new WikidataReconciler();
-var results = await reconciler.ReconcileAsync("Douglas Adams");
-// results[0].Id == "Q42", results[0].Name == "Douglas Adams"
 
-// With type constraint (Q5 = human)
+// Simple lookup by name
+var results = await reconciler.ReconcileAsync("Douglas Adams");
+
+Console.WriteLine(results[0].Id);          // "Q42"
+Console.WriteLine(results[0].Name);        // "Douglas Adams"
+Console.WriteLine(results[0].Description); // "English author and humourist (1952-2001)"
+Console.WriteLine(results[0].Score);       // 100
+Console.WriteLine(results[0].Match);       // true (confident auto-match)
+```
+
+## Usage
+
+### Filter by Type
+
+Constrain results to entities of a specific type using their P31 (instance of) value:
+
+```csharp
+// Only match humans (Q5)
 var results = await reconciler.ReconcileAsync("Douglas Adams", "Q5");
 
-// With properties for better scoring
+// Only match literary works (Q7725634)
+var results = await reconciler.ReconcileAsync("1984", "Q7725634");
+```
+
+### Add Property Constraints
+
+Supply known property values to improve scoring accuracy. Each property constraint boosts or penalizes candidates based on how well they match:
+
+```csharp
 var results = await reconciler.ReconcileAsync(new ReconciliationRequest
 {
     Query = "Douglas Adams",
-    Type = "Q5",
+    Type = "Q5",                    // human
+    Limit = 5,
     Properties =
     [
-        new PropertyConstraint("P27", "Q145"),  // country of citizenship: UK
+        new PropertyConstraint("P27", "Q145"),         // country of citizenship: United Kingdom
+        new PropertyConstraint("P569", "1952-03-11"),  // date of birth
     ]
 });
+```
 
-// Batch reconciliation
+Property values can be:
+
+| Data type | Example value | Description |
+|---|---|---|
+| Item (QID) | `"Q145"` | Exact entity match |
+| String | `"Douglas Adams"` | Fuzzy string match (token-sort-ratio) |
+| External ID | `"118500902"` | Exact match (e.g., GND identifier) |
+| Date | `"1952-03-11"` | Precision-aware (year, month, or full date) |
+| Quantity | `"42"` | Log-decay curve for numeric proximity |
+| URL | `"https://example.com"` | Scheme-normalized exact match |
+| Coordinates | `"51.5074,-0.1278"` | Distance-based (score decreases to 0 at 1 km) |
+
+### Exclude Types
+
+Remove candidates of specific types from results:
+
+```csharp
+var results = await reconciler.ReconcileAsync(new ReconciliationRequest
+{
+    Query = "Cambridge",
+    ExcludeTypes = ["Q17442446"],  // exclude Wikimedia internal items
+});
+```
+
+### Batch Reconciliation
+
+Reconcile multiple queries in parallel:
+
+```csharp
 var results = await reconciler.ReconcileBatchAsync([
-    new ReconciliationRequest { Query = "Douglas Adams" },
-    new ReconciliationRequest { Query = "Albert Einstein" },
+    new ReconciliationRequest { Query = "Douglas Adams", Type = "Q5" },
+    new ReconciliationRequest { Query = "Albert Einstein", Type = "Q5" },
+    new ReconciliationRequest { Query = "Nineteen Eighty-Four", Type = "Q7725634" },
 ]);
+
+// results[0] -> Douglas Adams matches
+// results[1] -> Albert Einstein matches
+// results[2] -> Nineteen Eighty-Four matches
+```
+
+### Direct QID Lookup
+
+If you already have a QID, you can pass it directly to retrieve entity details with a perfect score:
+
+```csharp
+var results = await reconciler.ReconcileAsync("Q42");
+// results[0].Id == "Q42", results[0].Name == "Douglas Adams", results[0].Score == 100
+```
+
+### Change the Search Language
+
+Search labels and aliases in a specific language:
+
+```csharp
+var results = await reconciler.ReconcileAsync(new ReconciliationRequest
+{
+    Query = "Frankreich",
+    Language = "de",
+});
+// Finds Q142 (France) via its German label
+```
+
+### Cancellation
+
+All async methods accept a `CancellationToken`:
+
+```csharp
+using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+var results = await reconciler.ReconcileAsync("Douglas Adams", cts.Token);
 ```
 
 ## Configuration
@@ -55,31 +151,119 @@ var results = await reconciler.ReconcileBatchAsync([
 ```csharp
 var reconciler = new WikidataReconciler(new WikidataReconcilerOptions
 {
+    // API endpoint (default: Wikidata)
     ApiEndpoint = "https://www.wikidata.org/w/api.php",
+
+    // Search language (default: "en", overridable per-request)
     Language = "en",
+
+    // User-Agent header (required by Wikimedia policy — identify your app)
     UserAgent = "MyApp/1.0 (contact@example.com)",
+
+    // HTTP timeout (default: 30 seconds)
     Timeout = TimeSpan.FromSeconds(30),
-    TypePropertyId = "P31",      // configurable for custom Wikibase
-    PropertyWeight = 0.4,        // weight for property matches (label = 1.0)
-    AutoMatchThreshold = 95,     // score threshold for auto-match
-    AutoMatchScoreGap = 10,      // min gap over second-best for auto-match
+
+    // Type property (default: "P31" for Wikidata — custom Wikibase may use different IDs)
+    TypePropertyId = "P31",
+
+    // Scoring tuning
+    PropertyWeight = 0.4,        // weight for each property match (label match = 1.0)
+    AutoMatchThreshold = 95,     // minimum score for auto-match confidence
+    AutoMatchScoreGap = 10,      // minimum gap over second-best candidate
 });
 ```
 
-## Scoring Algorithm
+### Bring Your Own HttpClient
 
-Based on [openrefine-wikibase](https://github.com/wetneb/openrefine-wikibase) by Antonin Delpeuch (MIT License):
+For connection pooling, custom handlers, or dependency injection:
 
-- **Label score**: Best fuzzy match (token-sort-ratio) across all labels and aliases
-- **Property scores**: Type-specific matching (exact for IDs, fuzzy for strings, log-decay for quantities, precision-aware for dates, distance-based for coordinates)
-- **Weighted average**: `(label * 1.0 + sum(property * 0.4)) / (1.0 + 0.4 * numProperties)`
-- **Auto-match**: Score > (95 - 5 * numProperties) with 10+ point gap over second-best
+```csharp
+// With IHttpClientFactory (recommended for long-lived applications)
+var httpClient = httpClientFactory.CreateClient("Wikidata");
+using var reconciler = new WikidataReconciler(httpClient, options);
+```
 
-## Target Frameworks
+When you pass your own `HttpClient`, the reconciler will not dispose it. When the reconciler creates its own (via the parameterless or options-only constructors), it owns and disposes the client.
 
-- .NET 8.0 (LTS)
-- .NET 10.0
+### Custom Wikibase Instances
+
+The library works with any Wikibase instance, not just Wikidata. Point it at your custom endpoint and configure the type property ID:
+
+```csharp
+var reconciler = new WikidataReconciler(new WikidataReconcilerOptions
+{
+    ApiEndpoint = "https://my-wikibase.example.com/w/api.php",
+    TypePropertyId = "P1",  // your instance's "instance of" property
+});
+```
+
+## How It Works
+
+The reconciliation pipeline has four stages:
+
+### 1. Dual Search
+
+Two MediaWiki API searches run concurrently:
+
+- **`wbsearchentities`** (autocomplete): Matches labels and aliases directly. Fast and precise for well-known names.
+- **`action=query&list=search`** (full-text): Searches across all entity content. Finds items like "1984" where the label ("Nineteen Eighty-Four") differs from the query.
+
+Results are merged (full-text first, then autocomplete) and deduplicated. This dual strategy is critical for recall. Queries are truncated at 250 characters to avoid silent failures from the MediaWiki API.
+
+### 2. Entity Fetching
+
+Candidate entities are fetched via `wbgetentities` in batches of up to 50, retrieving labels, descriptions, aliases, and claims in the requested language. The library respects the Wikidata statement rank hierarchy:
+
+- **Preferred** rank values are used if available
+- **Normal** rank values are used otherwise
+- **Deprecated** rank values are always excluded
+
+### 3. Scoring
+
+Each candidate receives a weighted score from 0 to 100:
+
+```
+label_score  = max(token_sort_ratio(query, label) for each label and alias)
+prop_score_i = max(type_specific_match(query_value, claim_value) for each claim)
+
+score = (label_score * 1.0 + sum(prop_score_i * 0.4)) / (1.0 + 0.4 * num_properties)
+```
+
+If a type constraint was specified and the entity has no type claims, the score is halved.
+
+The **auto-match** flag is set on the top result when:
+- Score > (95 - 5 * number of properties), AND
+- Score > second-best score + 10
+
+### 4. Type Filtering
+
+Candidates are checked against the requested type (P31 direct match) and excluded types. The library uses direct P31 matching only (no SPARQL subclass traversal) to avoid timeout issues with broad type hierarchies.
+
+## Result Object
+
+Each `ReconciliationResult` contains:
+
+| Property | Type | Description |
+|---|---|---|
+| `Id` | `string` | Wikidata entity ID (e.g., `"Q42"`) |
+| `Name` | `string` | Entity label in the requested language |
+| `Description` | `string?` | Entity description in the requested language |
+| `Score` | `double` | Confidence score from 0 to 100 |
+| `Match` | `bool` | `true` if this is a confident automatic match |
+| `Types` | `IReadOnlyList<string>?` | P31 (instance of) type IDs, if available |
+
+Results are sorted by score descending, with QID number as a tiebreaker (lower QID = older, more established entity).
+
+## Acknowledgements
+
+The reconciliation algorithms in this library (dual-search strategy, scoring formula, fuzzy matching approach, type checking, and property matching) are based on [openrefine-wikibase](https://github.com/wetneb/openrefine-wikibase) by [Antonin Delpeuch](https://github.com/wetneb), licensed under the MIT License.
+
+> Antonin Delpeuch. "A survey of OpenRefine reconciliation services." [arXiv:1906.08092](https://arxiv.org/abs/1906.08092)
+
+The configurable Wikibase endpoint support was informed by the [nfdi4culture fork](https://gitlab.com/nfdi4culture/openrefine-reconciliation-services/openrefine-wikibase).
+
+This is an independent C# implementation. No code was copied from the original Python project. The algorithms were re-implemented from the documented behavior and public API specifications. See the [NOTICE](NOTICE) file for full attribution details.
 
 ## License
 
-MIT - See [LICENSE](LICENSE) and [NOTICE](NOTICE) for attribution details.
+MIT. See [LICENSE](LICENSE) for the full text.
