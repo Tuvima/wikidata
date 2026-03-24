@@ -237,6 +237,39 @@ public sealed class WikidataReconciler : IDisposable
         }).ToList();
     }
 
+    /// <summary>
+    /// Suggests Wikidata properties matching a text prefix. Useful for building UIs
+    /// where users select properties like "date of birth" or "country of citizenship".
+    /// </summary>
+    public async Task<IReadOnlyList<SuggestResult>> SuggestPropertiesAsync(
+        string prefix, int limit = 7, string? language = null, CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(prefix);
+
+        var lang = language ?? _options.Language;
+        var searchResults = await _searchClient.SuggestPropertiesAsync(prefix, lang, limit, cancellationToken)
+            .ConfigureAwait(false);
+
+        return searchResults.Select(r => new SuggestResult
+        {
+            Id = r.Id,
+            Name = r.Label ?? r.Id,
+            Description = r.Description
+        }).ToList();
+    }
+
+    /// <summary>
+    /// Suggests Wikidata types/classes matching a text prefix. Useful for building UIs
+    /// where users select entity types like "book", "human", or "city".
+    /// Types are regular Wikidata items used as P31 (instance of) values.
+    /// </summary>
+    public async Task<IReadOnlyList<SuggestResult>> SuggestTypesAsync(
+        string prefix, int limit = 7, string? language = null, CancellationToken cancellationToken = default)
+    {
+        // Types are just regular Wikidata items — reuse entity suggest
+        return await SuggestAsync(prefix, limit, language, cancellationToken).ConfigureAwait(false);
+    }
+
     // ─── Entity / Property Fetching (Data Extension) ────────────────
 
     /// <summary>

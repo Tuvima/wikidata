@@ -169,17 +169,23 @@ await foreach (var (index, results) in reconciler.ReconcileBatchStreamAsync(requ
 
 ### Suggest / Autocomplete
 
-For interactive UIs with type-ahead search:
+For interactive UIs with type-ahead search. Three suggest methods cover entities, properties, and types:
 
 ```csharp
-var suggestions = await reconciler.SuggestAsync("Douglas");
-
-foreach (var s in suggestions)
-    Console.WriteLine($"{s.Id}: {s.Name} - {s.Description}");
-
+// Suggest entities
+var entities = await reconciler.SuggestAsync("Douglas");
 // Q42: Douglas Adams - English author and humourist (1952-2001)
-// Q485272: Douglas - city in Georgia, United States
-// ...
+
+// Suggest properties (for building property picker UIs)
+var properties = await reconciler.SuggestPropertiesAsync("date");
+// P569: date of birth
+// P570: date of death
+// P577: publication date
+
+// Suggest types (for building type filter UIs)
+var types = await reconciler.SuggestTypesAsync("book");
+// Q571: book
+// Q7725634: literary work
 ```
 
 ### Fetch Entity Data (Data Extension)
@@ -503,6 +509,19 @@ app.MapReconciliation("/api/reconcile", options =>
     ];
 });
 ```
+
+This registers the full W3C spec endpoints:
+
+| Endpoint | Purpose |
+|---|---|
+| `GET /api/reconcile` | Service manifest (name, capabilities, default types) |
+| `POST /api/reconcile` | Reconciliation queries (single or batch) |
+| `GET /api/reconcile/suggest/entity?prefix=...` | Entity autocomplete |
+| `GET /api/reconcile/suggest/property?prefix=...` | Property autocomplete |
+| `GET /api/reconcile/suggest/type?prefix=...` | Type/class autocomplete |
+| `GET /api/reconcile/preview?id=Q42` | HTML preview card (thumbnail, description, link) |
+
+All endpoints respect the `Accept-Language` header — a French browser automatically gets French labels without any extra configuration.
 
 Or register manually without the companion package (zero extra dependencies):
 

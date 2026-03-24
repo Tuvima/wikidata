@@ -162,6 +162,35 @@ public class IntegrationTests : IDisposable
         });
     }
 
+    [Fact]
+    public async Task SuggestPropertiesAsync_ShouldReturnProperties()
+    {
+        var results = await _reconciler.SuggestPropertiesAsync("date of birth");
+
+        Assert.NotEmpty(results);
+        Assert.Contains(results, r => r.Id == "P569");
+        Assert.All(results, r =>
+        {
+            Assert.NotEmpty(r.Id);
+            Assert.StartsWith("P", r.Id);
+            Assert.NotEmpty(r.Name);
+        });
+    }
+
+    [Fact]
+    public async Task SuggestTypesAsync_ShouldReturnTypes()
+    {
+        var results = await _reconciler.SuggestTypesAsync("human");
+
+        Assert.NotEmpty(results);
+        Assert.Contains(results, r => r.Id == "Q5");
+        Assert.All(results, r =>
+        {
+            Assert.NotEmpty(r.Id);
+            Assert.NotEmpty(r.Name);
+        });
+    }
+
     // ─── Streaming Batch ────────────────────────────────────────────
 
     [Fact]

@@ -73,6 +73,21 @@ internal sealed class WikidataSearchClient
     }
 
     /// <summary>
+    /// Lightweight autocomplete search for Wikidata properties.
+    /// Uses wbsearchentities with type=property.
+    /// </summary>
+    public async Task<List<WbSearchResult>> SuggestPropertiesAsync(string prefix, string language, int limit, CancellationToken cancellationToken = default)
+    {
+        var url = $"{_options.ApiEndpoint}?action=wbsearchentities&search={Uri.EscapeDataString(prefix)}" +
+                  $"&language={Uri.EscapeDataString(language)}&type=property&limit={limit}&format=json";
+
+        var json = await _httpClient.GetStringAsync(url, cancellationToken).ConfigureAwait(false);
+        var response = JsonSerializer.Deserialize(json, WikidataJsonContext.Default.WbSearchEntitiesResponse);
+
+        return response?.Search ?? [];
+    }
+
+    /// <summary>
     /// Searches for entities by an external ID property value using haswbstatement.
     /// </summary>
     public async Task<List<string>> SearchByExternalIdAsync(
