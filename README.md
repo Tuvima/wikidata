@@ -1,8 +1,28 @@
 # Tuvima.WikidataReconciliation
 
-A .NET library for reconciling text data against [Wikidata](https://www.wikidata.org/) entities. Given a name, title, or description, it finds the best-matching Wikidata item and returns a confidence score.
+A .NET library that connects your data to [Wikidata](https://www.wikidata.org/), the world's largest open knowledge base. It matches text (names, titles, places) to Wikidata entities, then lets you pull back structured data like dates, identifiers, images, and Wikipedia links.
+
+**In plain English:** You have a spreadsheet with author names, book titles, or company names. This library figures out which Wikidata item each one refers to, gives you a confidence score, and then lets you enrich your data with everything Wikidata knows about those entities — birth dates, nationalities, ISBN numbers, profile images, and more.
 
 This is the first .NET Wikidata reconciliation library, filling a gap in the ecosystem where only Python and JavaScript implementations previously existed.
+
+## Who Is This For?
+
+- **Data engineers** cleaning and linking datasets to structured identifiers
+- **App developers** building search, autocomplete, or knowledge-powered features
+- **Library/archive systems** matching catalog records to authority files (VIAF, ISNI, LoC)
+- **Research teams** enriching study data with Wikidata's 100M+ items
+- **Anyone** who needs to go from messy text to structured, linked data
+
+## What Can It Do?
+
+| You have... | The library gives you... |
+|---|---|
+| A name like "Douglas Adams" | The Wikidata ID (Q42), confidence score, and auto-match flag |
+| A matched entity (Q42) | Date of birth, nationality, works, identifiers, Wikipedia link, profile image |
+| An ISBN or IMDB ID | The matching Wikidata entity, without fuzzy matching |
+| A list of 10,000 names | Parallel batch processing with progress streaming |
+| A prefix like "Doug..." | Autocomplete suggestions for interactive UIs |
 
 ## What is Reconciliation?
 
@@ -13,8 +33,6 @@ Reconciliation is the process of matching messy, real-world text (like "Douglas 
 | `"Douglas Adams"` | Douglas Adams | [Q42](https://www.wikidata.org/wiki/Q42) | 100 |
 | `"United States of America"` | United States of America | [Q30](https://www.wikidata.org/wiki/Q30) | 100 |
 | `"1984"` (with type: literary work) | Nineteen Eighty-Four | [Q208460](https://www.wikidata.org/wiki/Q208460) | 67 |
-
-This is useful for data cleaning, entity linking, knowledge graph construction, and enriching datasets with structured Wikidata identifiers.
 
 ## Installation
 
@@ -212,6 +230,74 @@ var deUrls = await reconciler.GetWikipediaUrlsAsync(["Q42"], "de");
 
 Only returns URLs for entities that actually have a Wikipedia article in the requested language.
 
+### Reverse Lookup by External ID
+
+Find a Wikidata entity by its ISBN, IMDB ID, ORCID, or any other external identifier — no fuzzy matching needed:
+
+```csharp
+// Find entity by VIAF ID
+var results = await reconciler.LookupByExternalIdAsync("P214", "113230702");
+// results[0].Id == "Q42" (Douglas Adams)
+
+// Find entity by ISBN-13
+var results = await reconciler.LookupByExternalIdAsync("P212", "978-0-345-39180-3");
+
+// Find entity by IMDB ID
+var results = await reconciler.LookupByExternalIdAsync("P345", "tt0371724");
+```
+
+### Property Labels
+
+Resolve property IDs to human-readable names:
+
+```csharp
+var labels = await reconciler.GetPropertyLabelsAsync(["P569", "P27", "P31"]);
+// labels["P569"] = "date of birth"
+// labels["P27"]  = "country of citizenship"
+// labels["P31"]  = "instance of"
+```
+
+### Entity Images
+
+Fetch Wikimedia Commons image URLs for entities:
+
+```csharp
+var urls = await reconciler.GetImageUrlsAsync(["Q42", "Q937"]);
+// urls["Q42"]  = "https://commons.wikimedia.org/wiki/Special:FilePath/Douglas_Adams_San_Dimas_1.jpg"
+// urls["Q937"] = "https://commons.wikimedia.org/wiki/Special:FilePath/Einstein_1921_by_F_Schmutzer_-_restoration.jpg"
+```
+
+You can also build Commons URLs from any `WikidataValue`:
+
+```csharp
+var imageValue = entity.Claims["P18"][0].Value;
+var imageUrl = imageValue?.ToCommonsImageUrl();
+```
+
+### Value Formatting
+
+`WikidataValue` objects have a `ToDisplayString()` method for human-readable output:
+
+```csharp
+var dob = entity.Claims["P569"][0].Value!;
+Console.WriteLine(dob.ToDisplayString()); // "11 March 1952"
+
+var coords = entity.Claims["P625"][0].Value!;
+Console.WriteLine(coords.ToDisplayString()); // "51.5074, -0.1278"
+```
+
+### Entity Change Monitoring
+
+Check if watched entities have been modified recently (useful for cache invalidation):
+
+```csharp
+var changes = await reconciler.GetRecentChangesAsync(
+    ["Q42", "Q30"], since: DateTimeOffset.UtcNow.AddDays(-7));
+
+foreach (var change in changes)
+    Console.WriteLine($"{change.EntityId} changed at {change.Timestamp} by {change.User}");
+```
+
 ### Direct QID Lookup
 
 If you already have a QID, you can pass it directly to retrieve entity details with a perfect score:
@@ -363,9 +449,40 @@ using var reconciler = new WikidataReconciler(httpClient, options);
 
 This gives you full control over TTL, storage backend, and invalidation strategy.
 
-### Dependency Injection
+### ASP.NET Core Integration
 
-Register the reconciler in ASP.NET Core or any `IServiceCollection`-based host:
+Install the companion package for DI registration and W3C API hosting:
+
+```
+dotnet add package Tuvima.WikidataReconciliation.AspNetCore
+```
+
+Register with dependency injection:
+
+```csharp
+services.AddWikidataReconciliation(options =>
+{
+    options.Language = "en";
+    options.UserAgent = "MyApp/1.0 (contact@example.com)";
+});
+```
+
+Host a W3C Reconciliation Service API endpoint (compatible with OpenRefine and Google Sheets):
+
+```csharp
+app.MapReconciliation("/api/reconcile", options =>
+{
+    options.ServiceName = "My Wikidata Service";
+    options.DefaultTypes =
+    [
+        new("Q5", "Human"),
+        new("Q515", "City"),
+        new("Q7725634", "Literary work")
+    ];
+});
+```
+
+Or register manually without the companion package (zero extra dependencies):
 
 ```csharp
 services.AddHttpClient("Wikidata", c =>
@@ -375,8 +492,6 @@ services.AddSingleton(sp => new WikidataReconciler(
     sp.GetRequiredService<IHttpClientFactory>().CreateClient("Wikidata"),
     new WikidataReconcilerOptions { Language = "en" }));
 ```
-
-This gives you full control over the `HttpClient` lifecycle and lets you layer Polly policies, caching, or logging via `IHttpClientFactory`.
 
 ### Custom Wikibase Instances
 

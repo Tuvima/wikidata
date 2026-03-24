@@ -78,4 +78,92 @@ public sealed class WikidataValue
     /// For MonolingualText values: the language code. Null for other kinds.
     /// </summary>
     public string? Language { get; init; }
+
+    /// <summary>
+    /// Returns a human-readable display string for this value.
+    /// For dates: formats based on precision (e.g., "11 March 1952" for day precision, "1952" for year).
+    /// For quantities: formats with unit QID if present (e.g., "42", "1.8 Q11573").
+    /// For coordinates: formats as "51.5074, -0.1278".
+    /// For entity IDs: returns the QID (e.g., "Q42").
+    /// For strings/monolingual text: returns the raw text.
+    /// </summary>
+    public string ToDisplayString()
+    {
+        return Kind switch
+        {
+            WikidataValueKind.Time => FormatTime(),
+            WikidataValueKind.Quantity => FormatQuantity(),
+            WikidataValueKind.GlobeCoordinate => FormatCoordinates(),
+            WikidataValueKind.EntityId => EntityId ?? RawValue,
+            WikidataValueKind.MonolingualText => RawValue,
+            _ => RawValue
+        };
+    }
+
+    private string FormatTime()
+    {
+        // Parse Wikidata time format: +YYYY-MM-DDT00:00:00Z
+        var timeStr = RawValue.TrimStart('+', '-');
+        var parts = timeStr.Split('T')[0].Split('-');
+
+        if (parts.Length < 3)
+            return RawValue;
+
+        if (!int.TryParse(parts[0], out var year) ||
+            !int.TryParse(parts[1], out var month) ||
+            !int.TryParse(parts[2], out var day))
+            return RawValue;
+
+        var isNegative = RawValue.StartsWith('-');
+        var precision = TimePrecision ?? 11;
+
+        return precision switch
+        {
+            >= 11 when month >= 1 && month <= 12 =>
+                $"{day} {MonthName(month)} {(isNegative ? $"{year} BCE" : year.ToString())}",
+            10 when month >= 1 && month <= 12 =>
+                $"{MonthName(month)} {(isNegative ? $"{year} BCE" : year.ToString())}",
+            _ => isNegative ? $"{year} BCE" : year.ToString()
+        };
+    }
+
+    private static string MonthName(int month) => month switch
+    {
+        1 => "January", 2 => "February", 3 => "March", 4 => "April",
+        5 => "May", 6 => "June", 7 => "July", 8 => "August",
+        9 => "September", 10 => "October", 11 => "November", 12 => "December",
+        _ => month.ToString()
+    };
+
+    private string FormatQuantity()
+    {
+        var amount = Amount?.ToString() ?? RawValue;
+        if (Unit is not null)
+        {
+            // Extract QID from unit URI (e.g., "http://www.wikidata.org/entity/Q11573" -> "Q11573")
+            var lastSlash = Unit.LastIndexOf('/');
+            var unitId = lastSlash >= 0 ? Unit[(lastSlash + 1)..] : Unit;
+            return $"{amount} {unitId}";
+        }
+        return amount;
+    }
+
+    private string FormatCoordinates()
+    {
+        if (Latitude.HasValue && Longitude.HasValue)
+            return $"{Latitude.Value:F4}, {Longitude.Value:F4}";
+        return RawValue;
+    }
+
+    /// <summary>
+    /// For string/external-id/commonsMedia values: constructs a Wikimedia Commons file URL.
+    /// Returns null if this value is not a Commons filename.
+    /// </summary>
+    public string? ToCommonsImageUrl()
+    {
+        if (Kind != WikidataValueKind.String || string.IsNullOrWhiteSpace(RawValue))
+            return null;
+
+        return $"https://commons.wikimedia.org/wiki/Special:FilePath/{Uri.EscapeDataString(RawValue)}";
+    }
 }

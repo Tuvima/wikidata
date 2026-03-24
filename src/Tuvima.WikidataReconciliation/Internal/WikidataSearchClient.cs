@@ -72,6 +72,23 @@ internal sealed class WikidataSearchClient
         return response?.Search ?? [];
     }
 
+    /// <summary>
+    /// Searches for entities by an external ID property value using haswbstatement.
+    /// </summary>
+    public async Task<List<string>> SearchByExternalIdAsync(
+        string propertyId, string value, int limit, CancellationToken cancellationToken = default)
+    {
+        // Use CirrusSearch haswbstatement filter for exact property-value lookup
+        var query = $"haswbstatement:{propertyId}={value}";
+        var url = $"{_options.ApiEndpoint}?action=query&list=search&srnamespace=0" +
+                  $"&srlimit={limit}&srsearch={Uri.EscapeDataString(query)}&format=json";
+
+        var json = await _httpClient.GetStringAsync(url, cancellationToken).ConfigureAwait(false);
+        var response = JsonSerializer.Deserialize(json, WikidataJsonContext.Default.QuerySearchResponse);
+
+        return response?.Query?.Search?.Select(r => r.Title).ToList() ?? [];
+    }
+
     private async Task<List<string>> SearchEntitiesAsync(string query, string language, int limit, CancellationToken cancellationToken)
     {
         var url = $"{_options.ApiEndpoint}?action=wbsearchentities&search={Uri.EscapeDataString(query)}" +

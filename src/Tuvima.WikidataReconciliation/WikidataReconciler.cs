@@ -318,6 +318,142 @@ public sealed class WikidataReconciler : IDisposable
         return result;
     }
 
+    // ─── Reverse Lookup by External ID ────────────────────────────
+
+    /// <summary>
+    /// Finds Wikidata entities by an external identifier value.
+    /// For example, look up an entity by its ISBN, IMDB ID, ORCID, or any other external ID property.
+    /// Uses the CirrusSearch haswbstatement filter for exact property-value matching.
+    /// </summary>
+    /// <param name="propertyId">The external ID property (e.g., "P213" for ISNI, "P345" for IMDB ID, "P212" for ISBN-13).</param>
+    /// <param name="value">The external ID value to look up.</param>
+    /// <param name="language">Language for returned labels/descriptions. Defaults to configured language.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>Matching entities with full data, or empty if no match found.</returns>
+    public async Task<IReadOnlyList<WikidataEntityInfo>> LookupByExternalIdAsync(
+        string propertyId, string value, string? language = null, CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(propertyId);
+        ArgumentException.ThrowIfNullOrWhiteSpace(value);
+
+        var lang = language ?? _options.Language;
+        var ids = await _searchClient.SearchByExternalIdAsync(propertyId, value, 10, cancellationToken)
+            .ConfigureAwait(false);
+
+        if (ids.Count == 0)
+            return [];
+
+        var entities = await _entityFetcher.FetchEntitiesAsync(ids, lang, cancellationToken)
+            .ConfigureAwait(false);
+
+        return ids
+            .Where(id => entities.ContainsKey(id))
+            .Select(id => EntityMapper.MapEntity(entities[id], lang))
+            .ToList();
+    }
+
+    // ─── Property Label Resolution ──────────────────────────────────
+
+    /// <summary>
+    /// Resolves human-readable labels for Wikidata property IDs.
+    /// For example, "P569" → "date of birth", "P27" → "country of citizenship".
+    /// </summary>
+    public async Task<IReadOnlyDictionary<string, string>> GetPropertyLabelsAsync(
+        IReadOnlyList<string> propertyIds, string? language = null, CancellationToken cancellationToken = default)
+    {
+        var lang = language ?? _options.Language;
+
+        // Property entities use the same wbgetentities API as items
+        var entities = await _entityFetcher.FetchEntitiesAsync(propertyIds, lang, cancellationToken)
+            .ConfigureAwait(false);
+
+        var result = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var (id, entity) in entities)
+        {
+            if (LanguageFallback.TryGetValue(entity.Labels, lang, out var label))
+                result[id] = label;
+        }
+
+        return result;
+    }
+
+    // ─── Commons Image URLs ─────────────────────────────────────────
+
+    /// <summary>
+    /// Fetches Wikimedia Commons image URLs for entities that have a P18 (image) claim.
+    /// Returns a mapping of QID → image URL for entities that have images.
+    /// </summary>
+    public async Task<IReadOnlyDictionary<string, string>> GetImageUrlsAsync(
+        IReadOnlyList<string> qids, string? language = null, CancellationToken cancellationToken = default)
+    {
+        var lang = language ?? _options.Language;
+        var entities = await _entityFetcher.FetchEntitiesAsync(qids, lang, cancellationToken)
+            .ConfigureAwait(false);
+
+        var result = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var (id, entity) in entities)
+        {
+            var imageValues = WikidataEntityFetcher.GetClaimValues(entity, "P18");
+            if (imageValues.Count > 0 && imageValues[0].Value is System.Text.Json.JsonElement element &&
+                element.ValueKind == System.Text.Json.JsonValueKind.String)
+            {
+                var filename = element.GetString();
+                if (!string.IsNullOrEmpty(filename))
+                    result[id] = $"https://commons.wikimedia.org/wiki/Special:FilePath/{Uri.EscapeDataString(filename)}";
+            }
+        }
+
+        return result;
+    }
+
+    // ─── Entity Change Monitoring ─────────────────────────────────
+
+    /// <summary>
+    /// Checks for recent changes to specific Wikidata entities.
+    /// Useful for cache invalidation — call periodically to detect when watched entities have been modified.
+    /// </summary>
+    /// <param name="qids">Entity IDs to check for changes.</param>
+    /// <param name="since">Only return changes after this timestamp. Default is last 24 hours.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>Changes to the specified entities, ordered by timestamp descending.</returns>
+    public async Task<IReadOnlyList<EntityChange>> GetRecentChangesAsync(
+        IReadOnlyList<string> qids, DateTimeOffset? since = null,
+        CancellationToken cancellationToken = default)
+    {
+        var sinceTime = since ?? DateTimeOffset.UtcNow.AddHours(-24);
+        var titles = string.Join('|', qids);
+        var rcStart = sinceTime.UtcDateTime.ToString("yyyy-MM-ddTHH:mm:ssZ");
+
+        var url = $"{_options.ApiEndpoint}?action=query&list=recentchanges" +
+                  $"&rctitle={Uri.EscapeDataString(titles)}" +
+                  $"&rcstart={rcStart}&rcdir=newer&rclimit=500" +
+                  "&rcprop=title|timestamp|user|comment|ids&rctype=edit|new&format=json";
+
+        var resilientClient = new Internal.ResilientHttpClient(_httpClient, _options.MaxRetries);
+        var json = await resilientClient.GetStringAsync(url, cancellationToken).ConfigureAwait(false);
+        var response = System.Text.Json.JsonSerializer.Deserialize(json,
+            Internal.Json.WikidataJsonContext.Default.RecentChangesResponse);
+
+        if (response?.Query?.RecentChanges is null)
+            return [];
+
+        var qidSet = new HashSet<string>(qids, StringComparer.OrdinalIgnoreCase);
+
+        return response.Query.RecentChanges
+            .Where(rc => qidSet.Contains(rc.Title))
+            .Select(rc => new EntityChange
+            {
+                EntityId = rc.Title,
+                ChangeType = rc.Type,
+                Timestamp = DateTimeOffset.TryParse(rc.Timestamp, out var ts) ? ts : DateTimeOffset.MinValue,
+                User = rc.User,
+                Comment = rc.Comment,
+                RevisionId = rc.RevId
+            })
+            .OrderByDescending(c => c.Timestamp)
+            .ToList();
+    }
+
     // ─── Private helpers ────────────────────────────────────────────
 
     private async Task ThrottledReconcileAsync(

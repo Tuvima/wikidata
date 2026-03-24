@@ -321,6 +321,107 @@ public class IntegrationTests : IDisposable
         Assert.NotEqual(results[0].Id, results[0].Name); // Name should be a label, not the QID
     }
 
+    // ─── Reverse Lookup by External ID ────────────────────────────
+
+    [Fact]
+    public async Task LookupByExternalIdAsync_ShouldFindEntityByViaf()
+    {
+        // Douglas Adams VIAF ID is 113230702
+        var results = await _reconciler.LookupByExternalIdAsync("P214", "113230702");
+
+        Assert.NotEmpty(results);
+        Assert.Contains(results, r => r.Id == "Q42");
+        Assert.Equal("Douglas Adams", results.First(r => r.Id == "Q42").Label);
+    }
+
+    [Fact]
+    public async Task LookupByExternalIdAsync_NonexistentId_ShouldReturnEmpty()
+    {
+        var results = await _reconciler.LookupByExternalIdAsync("P214", "000000000000");
+
+        Assert.Empty(results);
+    }
+
+    // ─── Property Label Resolution ──────────────────────────────────
+
+    [Fact]
+    public async Task GetPropertyLabelsAsync_ShouldReturnLabels()
+    {
+        var labels = await _reconciler.GetPropertyLabelsAsync(["P569", "P27", "P31"]);
+
+        Assert.True(labels.ContainsKey("P569"));
+        Assert.True(labels.ContainsKey("P27"));
+        Assert.True(labels.ContainsKey("P31"));
+        Assert.Equal("date of birth", labels["P569"]);
+        Assert.Equal("instance of", labels["P31"]);
+    }
+
+    // ─── Commons Image URLs ─────────────────────────────────────────
+
+    [Fact]
+    public async Task GetImageUrlsAsync_ShouldReturnImageUrl()
+    {
+        var urls = await _reconciler.GetImageUrlsAsync(["Q42"]);
+
+        Assert.True(urls.ContainsKey("Q42"));
+        Assert.Contains("commons.wikimedia.org", urls["Q42"]);
+        Assert.Contains("Special:FilePath", urls["Q42"]);
+    }
+
+    // ─── Value Formatting ───────────────────────────────────────────
+
+    [Fact]
+    public async Task WikidataValue_ToDisplayString_ShouldFormatDate()
+    {
+        var entities = await _reconciler.GetEntitiesAsync(["Q42"]);
+        var entity = entities["Q42"];
+
+        // P569 = date of birth
+        if (entity.Claims.TryGetValue("P569", out var dobClaims) && dobClaims.Count > 0)
+        {
+            var dob = dobClaims[0].Value;
+            Assert.NotNull(dob);
+            Assert.Equal(WikidataValueKind.Time, dob.Kind);
+
+            var display = dob.ToDisplayString();
+            Assert.Contains("1952", display);
+            Assert.Contains("March", display);
+        }
+    }
+
+    [Fact]
+    public void WikidataValue_ToCommonsImageUrl_ShouldBuildUrl()
+    {
+        var value = new WikidataValue
+        {
+            Kind = WikidataValueKind.String,
+            RawValue = "Douglas Adams San Dimas 1.jpg"
+        };
+
+        var url = value.ToCommonsImageUrl();
+        Assert.NotNull(url);
+        Assert.Contains("commons.wikimedia.org", url);
+        Assert.Contains("Special:FilePath", url);
+    }
+
+    // ─── Entity Change Monitoring ───────────────────────────────────
+
+    [Fact]
+    public async Task GetRecentChangesAsync_ShouldNotCrash()
+    {
+        // Just verify the API call works — Q42 may or may not have recent changes
+        var changes = await _reconciler.GetRecentChangesAsync(
+            ["Q42"], DateTimeOffset.UtcNow.AddDays(-7));
+
+        Assert.NotNull(changes);
+        // If there are changes, verify structure
+        foreach (var change in changes)
+        {
+            Assert.Equal("Q42", change.EntityId);
+            Assert.NotEqual(DateTimeOffset.MinValue, change.Timestamp);
+        }
+    }
+
     public void Dispose()
     {
         _reconciler.Dispose();
