@@ -33,4 +33,10 @@ public sealed class ScoreBreakdown
     /// Whether a type penalty was applied (score halved because entity has no type claims).
     /// </summary>
     public bool TypePenaltyApplied { get; init; }
+
+    /// <summary>
+    /// Whether the score was set to 100 due to a unique identifier match
+    /// (e.g., VIAF, ISNI, ORCID exact match). See <see cref="WikidataReconcilerOptions.UniqueIdProperties"/>.
+    /// </summary>
+    public bool UniqueIdMatch { get; init; }
 }

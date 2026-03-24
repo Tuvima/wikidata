@@ -7,6 +7,7 @@ namespace Tuvima.WikidataReconciliation;
 /// <summary>
 /// Reconciles text queries against Wikidata entities using dual-search,
 /// fuzzy matching, type filtering, and property-based scoring.
+/// Also provides entity/property fetching and Wikipedia URL resolution.
 /// </summary>
 public sealed class WikidataReconciler : IDisposable
 {
@@ -17,6 +18,7 @@ public sealed class WikidataReconciler : IDisposable
     private readonly WikidataEntityFetcher _entityFetcher;
     private readonly ReconciliationScorer _scorer;
     private readonly TypeChecker _typeChecker;
+    private readonly SubclassResolver? _subclassResolver;
     private readonly SemaphoreSlim _concurrencyLimiter;
 
     public WikidataReconciler()
@@ -50,8 +52,13 @@ public sealed class WikidataReconciler : IDisposable
         _entityFetcher = new WikidataEntityFetcher(resilientClient, options);
         _scorer = new ReconciliationScorer(options);
         _typeChecker = new TypeChecker(options.TypePropertyId);
+        _subclassResolver = options.TypeHierarchyDepth > 0
+            ? new SubclassResolver(_entityFetcher, options.TypeHierarchyDepth)
+            : null;
         _concurrencyLimiter = new SemaphoreSlim(Math.Max(1, options.MaxConcurrency));
     }
+
+    // ─── Reconciliation ─────────────────────────────────────────────
 
     /// <summary>
     /// Reconciles a text query against Wikidata.
@@ -101,8 +108,11 @@ public sealed class WikidataReconciler : IDisposable
             if (!entities.TryGetValue(id, out var entity))
                 continue;
 
-            // Type checking
-            var typeResult = _typeChecker.Check(entity, request.Type, request.ExcludeTypes);
+            // Type checking (async for P279 support)
+            var typeResult = await _typeChecker.CheckAsync(
+                entity, request.Type, request.ExcludeTypes,
+                _subclassResolver, language, cancellationToken).ConfigureAwait(false);
+
             if (typeResult == TypeMatchResult.Excluded || typeResult == TypeMatchResult.NotMatched)
                 continue;
 
@@ -135,18 +145,18 @@ public sealed class WikidataReconciler : IDisposable
             var (id, entity, scoring, types, typeResult) = scored[i];
             double? secondBest = i == 0 && scored.Count > 1 ? scored[1].Scoring.Score : null;
 
-            var label = entity.Labels?.TryGetValue(language, out var lv) == true ? lv.Value : id;
-            var description = entity.Descriptions?.TryGetValue(language, out var dv) == true ? dv.Value : null;
+            LanguageFallback.TryGetValue(entity.Labels, language, out var label);
+            LanguageFallback.TryGetValue(entity.Descriptions, language, out var description);
 
             var typePenaltyApplied = typeResult == TypeMatchResult.NoType && !string.IsNullOrEmpty(request.Type);
 
             results.Add(new ReconciliationResult
             {
                 Id = id,
-                Name = label,
-                Description = description,
+                Name = string.IsNullOrEmpty(label) ? id : label,
+                Description = string.IsNullOrEmpty(description) ? null : description,
                 Score = Math.Round(scoring.Score, 2),
-                Match = i == 0 && _scorer.IsAutoMatch(scoring.Score, secondBest, numProperties),
+                Match = i == 0 && (scoring.UniqueIdMatch || _scorer.IsAutoMatch(scoring.Score, secondBest, numProperties)),
                 Types = types.Count > 0 ? types : null,
                 Breakdown = new ScoreBreakdown
                 {
@@ -154,13 +164,16 @@ public sealed class WikidataReconciler : IDisposable
                     PropertyScores = scoring.PropertyScores,
                     TypeMatched = string.IsNullOrEmpty(request.Type) ? null : typeResult == TypeMatchResult.Matched,
                     WeightedScore = Math.Round(scoring.WeightedScore, 2),
-                    TypePenaltyApplied = typePenaltyApplied
+                    TypePenaltyApplied = typePenaltyApplied,
+                    UniqueIdMatch = scoring.UniqueIdMatch
                 }
             });
         }
 
         return results;
     }
+
+    // ─── Batch Reconciliation ───────────────────────────────────────
 
     /// <summary>
     /// Reconciles multiple queries in parallel, respecting the configured concurrency limit.
@@ -179,12 +192,10 @@ public sealed class WikidataReconciler : IDisposable
     /// <summary>
     /// Reconciles multiple queries as a streaming async enumerable.
     /// Results are yielded as they complete, enabling progress reporting and reduced memory pressure.
-    /// Each item is a tuple of the request index and its results.
     /// </summary>
     public async IAsyncEnumerable<(int Index, IReadOnlyList<ReconciliationResult> Results)> ReconcileBatchStreamAsync(
         IReadOnlyList<ReconciliationRequest> requests, [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
-        // Create all tasks upfront
         var tasks = new Task<(int Index, IReadOnlyList<ReconciliationResult> Results)>[requests.Count];
 
         for (var i = 0; i < requests.Count; i++)
@@ -194,7 +205,6 @@ public sealed class WikidataReconciler : IDisposable
             tasks[i] = ThrottledReconcileWithIndexAsync(request, index, cancellationToken);
         }
 
-        // Yield results as they complete
         var remaining = new HashSet<Task<(int Index, IReadOnlyList<ReconciliationResult> Results)>>(tasks);
 
         while (remaining.Count > 0)
@@ -205,9 +215,10 @@ public sealed class WikidataReconciler : IDisposable
         }
     }
 
+    // ─── Suggest / Autocomplete ─────────────────────────────────────
+
     /// <summary>
     /// Suggests Wikidata entities matching a text prefix. Useful for autocomplete/type-ahead UIs.
-    /// Wraps the wbsearchentities API for lightweight, fast lookups.
     /// </summary>
     public async Task<IReadOnlyList<SuggestResult>> SuggestAsync(
         string prefix, int limit = 7, string? language = null, CancellationToken cancellationToken = default)
@@ -225,6 +236,89 @@ public sealed class WikidataReconciler : IDisposable
             Description = r.Description
         }).ToList();
     }
+
+    // ─── Entity / Property Fetching (Data Extension) ────────────────
+
+    /// <summary>
+    /// Fetches full entity data for the given QIDs, including labels, descriptions, aliases,
+    /// and all claims with qualifiers.
+    /// </summary>
+    public async Task<IReadOnlyDictionary<string, WikidataEntityInfo>> GetEntitiesAsync(
+        IReadOnlyList<string> qids, string? language = null, CancellationToken cancellationToken = default)
+    {
+        var lang = language ?? _options.Language;
+        var entities = await _entityFetcher.FetchEntitiesAsync(qids, lang, cancellationToken)
+            .ConfigureAwait(false);
+
+        var result = new Dictionary<string, WikidataEntityInfo>(StringComparer.OrdinalIgnoreCase);
+        foreach (var (id, entity) in entities)
+        {
+            result[id] = EntityMapper.MapEntity(entity, lang);
+        }
+
+        return result;
+    }
+
+    /// <summary>
+    /// Fetches specific properties for the given QIDs.
+    /// Returns only the requested property claims for each entity.
+    /// </summary>
+    public async Task<IReadOnlyDictionary<string, IReadOnlyDictionary<string, IReadOnlyList<WikidataClaim>>>> GetPropertiesAsync(
+        IReadOnlyList<string> qids, IReadOnlyList<string> propertyIds,
+        string? language = null, CancellationToken cancellationToken = default)
+    {
+        var lang = language ?? _options.Language;
+        var entities = await _entityFetcher.FetchEntitiesAsync(qids, lang, cancellationToken)
+            .ConfigureAwait(false);
+
+        var propertySet = new HashSet<string>(propertyIds, StringComparer.OrdinalIgnoreCase);
+        var result = new Dictionary<string, IReadOnlyDictionary<string, IReadOnlyList<WikidataClaim>>>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var (id, entity) in entities)
+        {
+            var allClaims = EntityMapper.MapClaims(entity.Claims);
+            var filtered = new Dictionary<string, IReadOnlyList<WikidataClaim>>();
+
+            foreach (var (propId, claims) in allClaims)
+            {
+                if (propertySet.Contains(propId))
+                    filtered[propId] = claims;
+            }
+
+            result[id] = filtered;
+        }
+
+        return result;
+    }
+
+    // ─── Wikipedia URL Resolution ───────────────────────────────────
+
+    /// <summary>
+    /// Resolves Wikipedia article URLs for the given QIDs.
+    /// Only returns URLs for entities that actually have a Wikipedia article in the requested language.
+    /// </summary>
+    public async Task<IReadOnlyDictionary<string, string>> GetWikipediaUrlsAsync(
+        IReadOnlyList<string> qids, string language = "en", CancellationToken cancellationToken = default)
+    {
+        var entities = await _entityFetcher.FetchEntitiesWithSitelinksAsync(qids, language, cancellationToken)
+            .ConfigureAwait(false);
+
+        var siteKey = $"{language}wiki";
+        var result = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var (id, entity) in entities)
+        {
+            if (entity.Sitelinks?.TryGetValue(siteKey, out var sitelink) == true &&
+                !string.IsNullOrEmpty(sitelink.Title))
+            {
+                result[id] = $"https://{language}.wikipedia.org/wiki/{Uri.EscapeDataString(sitelink.Title)}";
+            }
+        }
+
+        return result;
+    }
+
+    // ─── Private helpers ────────────────────────────────────────────
 
     private async Task ThrottledReconcileAsync(
         ReconciliationRequest request, int index,

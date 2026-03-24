@@ -4,8 +4,7 @@ namespace Tuvima.WikidataReconciliation.Internal;
 
 /// <summary>
 /// Checks entity types (P31 instance of) against requested type constraints.
-/// Uses direct P31 match only — no SPARQL subclass traversal — to avoid
-/// timeout issues with broad types (see upstream issue #131).
+/// Supports optional P279 subclass hierarchy walking via SubclassResolver.
 /// </summary>
 internal sealed class TypeChecker
 {
@@ -18,8 +17,15 @@ internal sealed class TypeChecker
 
     /// <summary>
     /// Determines the type match status for an entity.
+    /// When subclassResolver is provided and depth > 0, walks P279 hierarchy.
     /// </summary>
-    public TypeMatchResult Check(WikidataEntity entity, string? requiredType, IReadOnlyList<string>? excludeTypes)
+    public async Task<TypeMatchResult> CheckAsync(
+        WikidataEntity entity,
+        string? requiredType,
+        IReadOnlyList<string>? excludeTypes,
+        SubclassResolver? subclassResolver,
+        string language,
+        CancellationToken cancellationToken)
     {
         var entityTypes = WikidataEntityFetcher.GetTypeIds(entity, _typePropertyId);
 
@@ -30,6 +36,17 @@ internal sealed class TypeChecker
             {
                 if (entityTypes.Any(t => string.Equals(t, excludeType, StringComparison.OrdinalIgnoreCase)))
                     return TypeMatchResult.Excluded;
+            }
+
+            // Also check subclass exclusion if resolver available
+            if (subclassResolver != null)
+            {
+                foreach (var excludeType in excludeTypes)
+                {
+                    if (await subclassResolver.IsSubclassOfAsync(entityTypes, excludeType, language, cancellationToken)
+                            .ConfigureAwait(false))
+                        return TypeMatchResult.Excluded;
+                }
             }
         }
 
@@ -44,6 +61,14 @@ internal sealed class TypeChecker
         // Check direct P31 match
         if (entityTypes.Any(t => string.Equals(t, requiredType, StringComparison.OrdinalIgnoreCase)))
             return TypeMatchResult.Matched;
+
+        // Check P279 subclass hierarchy if resolver is available
+        if (subclassResolver != null)
+        {
+            if (await subclassResolver.IsSubclassOfAsync(entityTypes, requiredType, language, cancellationToken)
+                    .ConfigureAwait(false))
+                return TypeMatchResult.Matched;
+        }
 
         return TypeMatchResult.NotMatched;
     }

@@ -21,16 +21,34 @@ internal sealed class WikidataEntityFetcher
 
     /// <summary>
     /// Fetches entities by their IDs. Automatically batches requests (max 50 per API call).
+    /// Includes labels, descriptions, aliases, and claims with language fallback.
     /// </summary>
     public async Task<Dictionary<string, WikidataEntity>> FetchEntitiesAsync(
         IReadOnlyList<string> ids, string language, CancellationToken cancellationToken = default)
+    {
+        return await FetchInBatchesAsync(ids, language, "labels|descriptions|aliases|claims", cancellationToken)
+            .ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Fetches entities with sitelinks only (lightweight, for Wikipedia URL resolution).
+    /// </summary>
+    public async Task<Dictionary<string, WikidataEntity>> FetchEntitiesWithSitelinksAsync(
+        IReadOnlyList<string> ids, string language, CancellationToken cancellationToken = default)
+    {
+        return await FetchInBatchesAsync(ids, language, "sitelinks", cancellationToken)
+            .ConfigureAwait(false);
+    }
+
+    private async Task<Dictionary<string, WikidataEntity>> FetchInBatchesAsync(
+        IReadOnlyList<string> ids, string language, string props, CancellationToken cancellationToken)
     {
         var result = new Dictionary<string, WikidataEntity>(StringComparer.OrdinalIgnoreCase);
 
         for (var i = 0; i < ids.Count; i += MaxIdsPerRequest)
         {
             var batch = ids.Skip(i).Take(MaxIdsPerRequest).ToList();
-            var batchResult = await FetchBatchAsync(batch, language, cancellationToken).ConfigureAwait(false);
+            var batchResult = await FetchBatchAsync(batch, language, props, cancellationToken).ConfigureAwait(false);
 
             foreach (var kvp in batchResult)
                 result[kvp.Key] = kvp.Value;
@@ -40,12 +58,13 @@ internal sealed class WikidataEntityFetcher
     }
 
     private async Task<Dictionary<string, WikidataEntity>> FetchBatchAsync(
-        List<string> ids, string language, CancellationToken cancellationToken)
+        List<string> ids, string language, string props, CancellationToken cancellationToken)
     {
         var idsParam = string.Join('|', ids);
+        var languageParam = LanguageFallback.BuildLanguageParam(language);
         var url = $"{_options.ApiEndpoint}?action=wbgetentities&ids={Uri.EscapeDataString(idsParam)}" +
-                  $"&languages={Uri.EscapeDataString(language)}&format=json" +
-                  "&props=labels|descriptions|aliases|claims";
+                  $"&languages={Uri.EscapeDataString(languageParam)}&format=json" +
+                  $"&props={Uri.EscapeDataString(props)}";
 
         var json = await _httpClient.GetStringAsync(url, cancellationToken).ConfigureAwait(false);
         var response = JsonSerializer.Deserialize(json, WikidataJsonContext.Default.WbGetEntitiesResponse);
@@ -55,14 +74,17 @@ internal sealed class WikidataEntityFetcher
 
     /// <summary>
     /// Extracts all labels and aliases for a given entity in the requested language.
+    /// Uses language fallback chain for labels.
     /// </summary>
     public static List<string> GetAllLabels(WikidataEntity entity, string language)
     {
         var labels = new List<string>();
 
-        if (entity.Labels?.TryGetValue(language, out var label) == true && !string.IsNullOrEmpty(label.Value))
-            labels.Add(label.Value);
+        // Primary label with fallback
+        if (LanguageFallback.TryGetValue(entity.Labels, language, out var label))
+            labels.Add(label);
 
+        // Aliases in requested language (no fallback — aliases are language-specific)
         if (entity.Aliases?.TryGetValue(language, out var aliases) == true)
         {
             foreach (var alias in aliases)
@@ -77,20 +99,16 @@ internal sealed class WikidataEntityFetcher
 
     /// <summary>
     /// Extracts claim values for a property, respecting Wikidata rank hierarchy.
-    /// Supports chained property paths (e.g., "P131/P17") by resolving the first segment.
     /// </summary>
     public static List<DataValue> GetClaimValues(WikidataEntity entity, string propertyId)
     {
-        // For simple properties, resolve directly
         if (entity.Claims?.TryGetValue(propertyId, out var claims) != true || claims!.Count == 0)
             return [];
 
-        // Filter out deprecated and novalue/somevalue snaks
         var validClaims = claims
             .Where(c => c.Rank != "deprecated" && c.MainSnak?.SnakType == "value" && c.MainSnak.DataValue != null)
             .ToList();
 
-        // Prefer preferred rank if any exist
         var preferred = validClaims.Where(c => c.Rank == "preferred").ToList();
         var source = preferred.Count > 0 ? preferred : validClaims.Where(c => c.Rank == "normal").ToList();
 

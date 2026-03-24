@@ -164,6 +164,54 @@ foreach (var s in suggestions)
 // ...
 ```
 
+### Fetch Entity Data (Data Extension)
+
+After reconciliation, fetch full entity data including claims with qualifiers:
+
+```csharp
+var entities = await reconciler.GetEntitiesAsync(["Q42"]);
+var adams = entities["Q42"];
+
+Console.WriteLine(adams.Label);       // "Douglas Adams"
+Console.WriteLine(adams.Description); // "English author and humourist (1952-2001)"
+
+// Access claims with typed values
+foreach (var claim in adams.Claims["P31"])
+{
+    Console.WriteLine($"Instance of: {claim.Value?.EntityId}"); // "Q5"
+}
+
+// Access qualifiers (e.g., educated at with start/end dates)
+foreach (var claim in adams.Claims["P69"])
+{
+    Console.WriteLine($"Educated at: {claim.Value?.EntityId}");
+    if (claim.Qualifiers.TryGetValue("P580", out var startDates))
+        Console.WriteLine($"  Start: {startDates[0].RawValue}");
+}
+```
+
+Fetch only specific properties for efficiency:
+
+```csharp
+var props = await reconciler.GetPropertiesAsync(["Q42", "Q30"], ["P27", "P569"]);
+var citizenship = props["Q42"]["P27"][0].Value?.EntityId; // "Q145" (UK)
+```
+
+### Wikipedia URLs
+
+Resolve entities to validated Wikipedia article links:
+
+```csharp
+var urls = await reconciler.GetWikipediaUrlsAsync(["Q42", "Q30"]);
+// urls["Q42"] = "https://en.wikipedia.org/wiki/Douglas_Adams"
+// urls["Q30"] = "https://en.wikipedia.org/wiki/United_States"
+
+var deUrls = await reconciler.GetWikipediaUrlsAsync(["Q42"], "de");
+// deUrls["Q42"] = "https://de.wikipedia.org/wiki/Douglas_Adams"
+```
+
+Only returns URLs for entities that actually have a Wikipedia article in the requested language.
+
 ### Direct QID Lookup
 
 If you already have a QID, you can pass it directly to retrieve entity details with a perfect score:
@@ -185,6 +233,8 @@ var results = await reconciler.ReconcileAsync(new ReconciliationRequest
 });
 // Finds Q142 (France) via its German label
 ```
+
+The library uses a language fallback chain: if a label/description is missing in the requested language, it tries the subtag parent ("de-ch" falls back to "de"), then "mul" (multilingual), then "en" (English).
 
 ### Cancellation
 
@@ -247,6 +297,14 @@ var reconciler = new WikidataReconciler(new WikidataReconcilerOptions
     // Resilience (rate limiting & retries)
     MaxConcurrency = 5,          // max parallel API requests during batch operations
     MaxRetries = 3,              // retry attempts on HTTP 429 with exponential backoff
+
+    // Type hierarchy (P279 subclass walking)
+    TypeHierarchyDepth = 0,      // 0 = direct P31 match only (default, fast)
+                                  // 5 = walk up to 5 levels of P279 (subclass of)
+                                  // e.g., "novel" matches "literary work" at depth 1
+
+    // Unique identifier shortcut (score 100 when a unique ID matches exactly)
+    // UniqueIdProperties = new HashSet<string> { "P213", "P214", ... } // defaults included
 });
 ```
 
@@ -305,6 +363,21 @@ using var reconciler = new WikidataReconciler(httpClient, options);
 
 This gives you full control over TTL, storage backend, and invalidation strategy.
 
+### Dependency Injection
+
+Register the reconciler in ASP.NET Core or any `IServiceCollection`-based host:
+
+```csharp
+services.AddHttpClient("Wikidata", c =>
+    c.DefaultRequestHeaders.UserAgent.ParseAdd("MyApp/1.0 (contact@example.com)"));
+
+services.AddSingleton(sp => new WikidataReconciler(
+    sp.GetRequiredService<IHttpClientFactory>().CreateClient("Wikidata"),
+    new WikidataReconcilerOptions { Language = "en" }));
+```
+
+This gives you full control over the `HttpClient` lifecycle and lets you layer Polly policies, caching, or logging via `IHttpClientFactory`.
+
 ### Custom Wikibase Instances
 
 The library works with any Wikibase instance, not just Wikidata. Point it at your custom endpoint and configure the type property ID:
@@ -357,7 +430,7 @@ The **auto-match** flag is set on the top result when:
 
 ### 4. Type Filtering
 
-Candidates are checked against the requested type (P31 direct match) and excluded types. The library uses direct P31 matching only (no SPARQL subclass traversal) to avoid timeout issues with broad type hierarchies.
+Candidates are checked against the requested type (P31 direct match) and excluded types. By default, the library uses direct P31 matching for speed. Set `TypeHierarchyDepth` to walk the P279 (subclass of) hierarchy — for example, with depth 3, a "novel" (Q8261) entity matches a query for "literary work" (Q7725634) because novel is a subclass of literary work. The subclass hierarchy is cached in memory within the reconciler's lifetime to avoid redundant API calls.
 
 ## Result Object
 
@@ -382,6 +455,7 @@ The `ScoreBreakdown` contains:
 | `TypeMatched` | `bool?` | Whether entity matched the type constraint (`null` if none) |
 | `WeightedScore` | `double` | Weighted formula result before any type penalty |
 | `TypePenaltyApplied` | `bool` | Whether the score was halved due to missing type |
+| `UniqueIdMatch` | `bool` | Whether score was set to 100 via a unique identifier match |
 
 Results are sorted by score descending, with QID number as a tiebreaker (lower QID = older, more established entity).
 

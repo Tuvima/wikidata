@@ -30,6 +30,9 @@ internal sealed class WikidataEntity
 
     [JsonPropertyName("claims")]
     public Dictionary<string, List<Claim>>? Claims { get; set; }
+
+    [JsonPropertyName("sitelinks")]
+    public Dictionary<string, SiteLink>? Sitelinks { get; set; }
 }
 
 internal sealed class LanguageValue
@@ -48,6 +51,21 @@ internal sealed class Claim
 
     [JsonPropertyName("rank")]
     public string? Rank { get; set; }
+
+    [JsonPropertyName("qualifiers")]
+    public Dictionary<string, List<Snak>>? Qualifiers { get; set; }
+
+    [JsonPropertyName("qualifiers-order")]
+    public List<string>? QualifiersOrder { get; set; }
+}
+
+internal sealed class SiteLink
+{
+    [JsonPropertyName("site")]
+    public string Site { get; set; } = "";
+
+    [JsonPropertyName("title")]
+    public string Title { get; set; } = "";
 }
 
 internal sealed class Snak

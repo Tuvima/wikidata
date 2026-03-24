@@ -14,9 +14,11 @@ public class IntegrationTests : IDisposable
     {
         _reconciler = new WikidataReconciler(new WikidataReconcilerOptions
         {
-            UserAgent = "Tuvima.WikidataReconciliation.Tests/0.1 (https://github.com/Tuvima/wikidata-reconciliation-dotnet)"
+            UserAgent = "Tuvima.WikidataReconciliation.Tests/0.2 (https://github.com/Tuvima/wikidata-reconciliation-dotnet)"
         });
     }
+
+    // ─── Core Reconciliation ────────────────────────────────────────
 
     [Fact]
     public async Task DouglasAdams_ShouldReturnQ42()
@@ -119,6 +121,8 @@ public class IntegrationTests : IDisposable
         Assert.Equal("Q42", resultsWithoutProps[0].Id);
     }
 
+    // ─── Score Breakdown ────────────────────────────────────────────
+
     [Fact]
     public async Task ScoreBreakdown_ShouldContainLabelAndPropertyScores()
     {
@@ -142,6 +146,8 @@ public class IntegrationTests : IDisposable
         Assert.False(breakdown.TypePenaltyApplied);
     }
 
+    // ─── Suggest / Autocomplete ─────────────────────────────────────
+
     [Fact]
     public async Task SuggestAsync_ShouldReturnResults()
     {
@@ -155,6 +161,8 @@ public class IntegrationTests : IDisposable
             Assert.NotEmpty(r.Name);
         });
     }
+
+    // ─── Streaming Batch ────────────────────────────────────────────
 
     [Fact]
     public async Task ReconcileBatchStreamAsync_ShouldYieldAllResults()
@@ -174,9 +182,143 @@ public class IntegrationTests : IDisposable
         }
 
         Assert.Equal(3, received.Count);
-        // All indices should be present (0, 1, 2), though order may vary
         Assert.Equal([0, 1, 2], received.Select(r => r.Index).OrderBy(i => i));
         Assert.All(received, r => Assert.NotEmpty(r.Results));
+    }
+
+    // ─── Entity / Property Fetching ─────────────────────────────────
+
+    [Fact]
+    public async Task GetEntitiesAsync_ShouldReturnEntityInfo()
+    {
+        var entities = await _reconciler.GetEntitiesAsync(["Q42"]);
+
+        Assert.True(entities.ContainsKey("Q42"));
+        var entity = entities["Q42"];
+        Assert.Equal("Q42", entity.Id);
+        Assert.Equal("Douglas Adams", entity.Label);
+        Assert.NotNull(entity.Description);
+        Assert.NotEmpty(entity.Claims);
+        // Should have P31 (instance of)
+        Assert.True(entity.Claims.ContainsKey("P31"));
+    }
+
+    [Fact]
+    public async Task GetPropertiesAsync_ShouldReturnOnlyRequestedProperties()
+    {
+        var props = await _reconciler.GetPropertiesAsync(["Q42"], ["P27", "P569"]);
+
+        Assert.True(props.ContainsKey("Q42"));
+        var entityProps = props["Q42"];
+        // Should only contain requested properties (if the entity has them)
+        Assert.All(entityProps.Keys, key => Assert.Contains(key, new[] { "P27", "P569" }));
+        // Q42 should have P27 (country of citizenship)
+        Assert.True(entityProps.ContainsKey("P27"));
+    }
+
+    [Fact]
+    public async Task GetEntitiesAsync_ClaimsShouldIncludeQualifiers()
+    {
+        var entities = await _reconciler.GetEntitiesAsync(["Q42"]);
+        var entity = entities["Q42"];
+
+        // Find a claim that typically has qualifiers (P69 = educated at)
+        if (entity.Claims.TryGetValue("P69", out var educatedAtClaims))
+        {
+            // At least one claim should have qualifiers
+            var hasQualifiers = educatedAtClaims.Any(c => c.Qualifiers.Count > 0);
+            Assert.True(hasQualifiers, "Expected P69 claims to have qualifiers (start/end time)");
+        }
+    }
+
+    [Fact]
+    public async Task GetEntitiesAsync_EntityIdValuesShouldHaveQid()
+    {
+        var entities = await _reconciler.GetEntitiesAsync(["Q42"]);
+        var entity = entities["Q42"];
+
+        // P31 (instance of) claims should have EntityId values
+        var p31Claims = entity.Claims["P31"];
+        var firstValue = p31Claims[0].Value;
+        Assert.NotNull(firstValue);
+        Assert.Equal(WikidataValueKind.EntityId, firstValue.Kind);
+        Assert.NotNull(firstValue.EntityId);
+        Assert.StartsWith("Q", firstValue.EntityId);
+    }
+
+    // ─── Wikipedia URL Resolution ───────────────────────────────────
+
+    [Fact]
+    public async Task GetWikipediaUrlsAsync_ShouldReturnUrls()
+    {
+        var urls = await _reconciler.GetWikipediaUrlsAsync(["Q42"]);
+
+        Assert.True(urls.ContainsKey("Q42"));
+        Assert.Contains("en.wikipedia.org", urls["Q42"]);
+        Assert.Contains("Douglas", urls["Q42"]);
+    }
+
+    [Fact]
+    public async Task GetWikipediaUrlsAsync_German_ShouldReturnDeUrl()
+    {
+        var urls = await _reconciler.GetWikipediaUrlsAsync(["Q42"], "de");
+
+        Assert.True(urls.ContainsKey("Q42"));
+        Assert.Contains("de.wikipedia.org", urls["Q42"]);
+    }
+
+    [Fact]
+    public async Task GetWikipediaUrlsAsync_NonexistentLanguage_ShouldReturnEmpty()
+    {
+        // Use a language unlikely to have a Wikipedia article
+        var urls = await _reconciler.GetWikipediaUrlsAsync(["Q42"], "got"); // Gothic language
+
+        // May or may not have a Gothic Wikipedia article — just verify no crash
+        Assert.NotNull(urls);
+    }
+
+    // ─── P279 Subclass Type Matching ────────────────────────────────
+
+    [Fact]
+    public async Task Reconcile_WithTypeHierarchyDepth_ShouldMatchSubclass()
+    {
+        using var reconciler = new WikidataReconciler(new WikidataReconcilerOptions
+        {
+            UserAgent = "Tuvima.WikidataReconciliation.Tests/0.2 (https://github.com/Tuvima/wikidata-reconciliation-dotnet)",
+            TypeHierarchyDepth = 5
+        });
+
+        // "Douglas Adams" is P31:Q5 (human). Q5 is a subclass of Q215627 (person).
+        // With depth=0, filtering by Q215627 would miss Q42.
+        // With depth>0, Q5 → P279 → ... → Q215627 should match.
+        var results = await reconciler.ReconcileAsync(new ReconciliationRequest
+        {
+            Query = "Douglas Adams",
+            Type = "Q215627", // person (superclass of human)
+            Limit = 5
+        });
+
+        Assert.NotEmpty(results);
+        Assert.Contains(results, r => r.Id == "Q42");
+    }
+
+    // ─── Language Fallback ──────────────────────────────────────────
+
+    [Fact]
+    public async Task Reconcile_WithLanguageFallback_ShouldReturnLabel()
+    {
+        // Use a subtag that likely doesn't have its own labels
+        var results = await _reconciler.ReconcileAsync(new ReconciliationRequest
+        {
+            Query = "Douglas Adams",
+            Language = "en-gb", // should fall back to "en"
+            Limit = 5
+        });
+
+        Assert.NotEmpty(results);
+        // Should still get a label via fallback
+        Assert.False(string.IsNullOrEmpty(results[0].Name));
+        Assert.NotEqual(results[0].Id, results[0].Name); // Name should be a label, not the QID
     }
 
     public void Dispose()

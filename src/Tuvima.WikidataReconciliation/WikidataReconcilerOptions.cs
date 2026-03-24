@@ -63,4 +63,36 @@ public sealed class WikidataReconcilerOptions
     /// Uses exponential backoff (1s, 2s, 4s, ...). Default is 3.
     /// </summary>
     public int MaxRetries { get; init; } = 3;
+
+    /// <summary>
+    /// Maximum depth for P279 (subclass of) hierarchy walking during type checking.
+    /// Default is 0 (direct P31 match only — fast, no extra API calls).
+    /// Set to a positive value (e.g., 5) to walk superclasses and improve type recall.
+    /// For example, with depth 3, a "novel" (Q8261) entity would match a query
+    /// for "literary work" (Q7725634) because novel → literary work via P279.
+    /// </summary>
+    public int TypeHierarchyDepth { get; init; } = 0;
+
+    /// <summary>
+    /// Property IDs considered unique identifiers. When a property constraint matches
+    /// one of these with score 100, the overall reconciliation score is set to 100.
+    /// Default includes common authority control IDs.
+    /// Set to an empty set to disable the shortcut.
+    /// </summary>
+    public IReadOnlySet<string> UniqueIdProperties { get; init; } = new HashSet<string>
+    {
+        "P213",  // ISNI
+        "P214",  // VIAF ID
+        "P227",  // GND ID
+        "P244",  // Library of Congress authority ID
+        "P268",  // BnF ID
+        "P269",  // IdRef ID
+        "P349",  // National Diet Library ID
+        "P496",  // ORCID iD
+        "P906",  // SELIBR ID
+        "P1006", // NTA ID (Netherlands)
+        "P1015", // NORAF ID
+        "P1566", // GeoNames ID
+        "P2427", // GRID ID
+    };
 }

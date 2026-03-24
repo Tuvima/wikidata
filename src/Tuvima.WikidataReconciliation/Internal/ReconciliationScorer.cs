@@ -55,6 +55,26 @@ internal sealed class ReconciliationScorer
 
         var weightedScore = weightedSum / totalWeight;
 
+        // Unique ID shortcut: if any unique-ID property scores 100, return 100
+        if (properties is { Count: > 0 })
+        {
+            foreach (var prop in properties)
+            {
+                if (_options.UniqueIdProperties.Contains(prop.PropertyId) &&
+                    propertyScores.TryGetValue(prop.PropertyId, out var ps) && ps >= 100)
+                {
+                    return new ScoringResult
+                    {
+                        Score = 100,
+                        LabelScore = labelScore,
+                        PropertyScores = propertyScores,
+                        WeightedScore = weightedScore,
+                        UniqueIdMatch = true
+                    };
+                }
+            }
+        }
+
         return new ScoringResult
         {
             Score = weightedScore,
@@ -116,4 +136,5 @@ internal sealed record ScoringResult
     public double LabelScore { get; init; }
     public Dictionary<string, double> PropertyScores { get; init; } = new();
     public double WeightedScore { get; init; }
+    public bool UniqueIdMatch { get; init; }
 }
