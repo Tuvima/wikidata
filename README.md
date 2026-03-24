@@ -600,13 +600,15 @@ Each `ReconciliationResult` contains:
 | `Score` | `double` | Confidence score from 0 to 100 |
 | `Match` | `bool` | `true` if this is a confident automatic match |
 | `Types` | `IReadOnlyList<string>?` | P31 (instance of) type IDs, if available |
+| `MatchedLabel` | `string?` | The label/alias text that best matched the query (may be in a different language than `Name`) |
 | `Breakdown` | `ScoreBreakdown?` | Detailed scoring breakdown (see [Score Breakdown](#score-breakdown-explainability)) |
 
 The `ScoreBreakdown` contains:
 
 | Property | Type | Description |
 |---|---|---|
-| `LabelScore` | `double` | Best fuzzy match score across labels/aliases (0-100) |
+| `LabelScore` | `double` | Best fuzzy match score across labels/aliases in all languages (0-100) |
+| `MatchedLabel` | `string?` | The label/alias text that produced the best fuzzy match |
 | `PropertyScores` | `IReadOnlyDictionary<string, double>` | Per-property match scores, keyed by property ID |
 | `TypeMatched` | `bool?` | Whether entity matched the type constraint (`null` if none) |
 | `WeightedScore` | `double` | Weighted formula result before any type penalty |
@@ -614,6 +616,51 @@ The `ScoreBreakdown` contains:
 | `UniqueIdMatch` | `bool` | Whether score was set to 100 via a unique identifier match |
 
 Results are sorted by score descending, with QID number as a tiebreaker (lower QID = older, more established entity).
+
+## What's New by Version
+
+### v0.4.0
+
+- **Cross-language label scoring** — the scorer now compares your query against labels and aliases in every language, not just English. Searching "Die Verwandlung" now correctly finds Q184222 (The Metamorphosis) with a high score, instead of scoring near 0% against only the English label.
+- **MatchedLabel property** — each result now tells you which label or alias text actually matched the query. Useful when the best match came from a different language than the display name.
+
+### v0.3.0
+
+- **External ID lookup** — find entities by ISBN, IMDB ID, VIAF, ORCID, or any other external identifier, without fuzzy matching
+- **Value formatting** — `ToDisplayString()` on claim values gives human-readable output (e.g., "11 March 1952" for dates, "51.5074, -0.1278" for coordinates)
+- **Property labels** — resolve property IDs like P569 to names like "date of birth"
+- **Entity images** — get Wikimedia Commons image URLs from P18 claims
+- **Wikipedia summaries** — fetch article summaries with thumbnail and description from the Wikipedia REST API
+- **W3C Reconciliation API** — ASP.NET Core middleware that hosts a full W3C-compatible endpoint, including entity/property/type suggest and HTML preview cards
+- **Accept-Language support** — W3C endpoints automatically use the browser's language
+- **Entity change monitoring** — check if watched entities have been modified recently, useful for cache invalidation
+- **maxlag support** — every API request includes the Wikimedia maxlag parameter for polite bot behavior
+
+### v0.2.0
+
+- **Data extension** — fetch full entity data (labels, descriptions, aliases, claims) after reconciliation
+- **Qualifiers** — access qualifier values on claims (e.g., start/end dates on "educated at")
+- **P279 subclass matching** — optionally walk the "subclass of" hierarchy so "novel" matches "literary work"
+- **Specific property fetching** — fetch only the properties you need instead of everything
+- **Wikipedia URLs** — resolve entities to Wikipedia article links in any language
+- **Batch reconciliation** — reconcile many queries in parallel with configurable concurrency
+- **Exclude types** — filter out unwanted entity types from results
+- **Custom Wikibase support** — point the library at any Wikibase instance, not just Wikidata
+
+### v0.1.0
+
+- **Core reconciliation** — match text to Wikidata entities using dual search (autocomplete + full-text)
+- **Fuzzy matching** — token-sort-ratio scoring based on Levenshtein distance
+- **Type filtering** — constrain results to entities of a specific P31 type
+- **Property constraints** — boost scoring with known property values (items, strings, dates, quantities, coordinates, URLs)
+- **Property paths** — chain properties like "P19/P17" (place of birth → country)
+- **Score breakdown** — detailed explanation of how each score was computed
+- **Unique ID shortcut** — instant score of 100 when an authority ID (VIAF, ISNI, etc.) matches exactly
+- **Streaming batch** — `IAsyncEnumerable` results for large datasets with progress reporting
+- **Suggest/autocomplete** — entity search for interactive type-ahead UIs
+- **Retry with backoff** — automatic retry on HTTP 429 with exponential backoff
+- **Zero dependencies** — only uses `System.Text.Json` built into .NET
+- **AOT compatible** — works with native AOT compilation and trimming
 
 ## Acknowledgements
 
