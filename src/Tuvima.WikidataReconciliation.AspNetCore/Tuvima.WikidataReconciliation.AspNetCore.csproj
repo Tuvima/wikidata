@@ -16,7 +16,12 @@
     <PackageProjectUrl>https://github.com/Tuvima/wikidata-reconciliation-dotnet</PackageProjectUrl>
     <RepositoryUrl>https://github.com/Tuvima/wikidata-reconciliation-dotnet</RepositoryUrl>
     <RepositoryType>git</RepositoryType>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
   </PropertyGroup>
+
+  <ItemGroup>
+    <None Include="..\..\README.md" Pack="true" PackagePath="\" />
+  </ItemGroup>
 
   <ItemGroup>
     <FrameworkReference Include="Microsoft.AspNetCore.App" />
