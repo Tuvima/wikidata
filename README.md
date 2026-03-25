@@ -336,6 +336,31 @@ if (stale.Count > 0)
 }
 ```
 
+### Wikipedia Section Content
+
+Fetch specific sections from Wikipedia articles — plot summaries, career details, themes, or any other section:
+
+```csharp
+// Get table of contents for an entity
+var sections = await reconciler.GetWikipediaSectionsAsync(["Q208460"]); // 1984 (novel)
+var toc = sections["Q208460"];
+
+foreach (var section in toc)
+    Console.WriteLine($"{section.Number} [{section.Level}] {section.Title}");
+// 1 [2] Plot summary
+// 1.1 [3] Epilogue
+// 2 [2] Characters
+// ...
+
+// Fetch a specific section's content as plain text
+var plotIndex = toc.First(s => s.Title == "Plot summary").Index;
+var plot = await reconciler.GetWikipediaSectionContentAsync("Q208460", plotIndex);
+Console.WriteLine(plot);
+// "As the narrative opens on April 4th, 1984..."
+```
+
+The library returns the table of contents with section names, levels, and indices — you decide which sections matter for your use case. Section content is returned as clean plain text with HTML tags, footnotes, and tables stripped.
+
 ### Entity Change Monitoring
 
 Get detailed edit history for watched entities (useful for audit logs or understanding what changed):
@@ -643,6 +668,7 @@ Results are sorted by score descending, with QID number as a tiebreaker (lower Q
 
 ### v0.5.0
 
+- **Wikipedia section content** — new `GetWikipediaSectionsAsync` returns the table of contents for Wikipedia articles, and `GetWikipediaSectionContentAsync` fetches specific sections as clean plain text. Pull plot summaries, career details, themes, or any section — generalized, not tied to any entity type.
 - **Staleness detection** — `WikidataEntityInfo` now includes `LastRevisionId` and `Modified` on every entity fetch (zero extra API calls). New `GetRevisionIdsAsync` method provides an ultra-lightweight way to check if cached entities have changed — returns only revision IDs and timestamps without fetching labels, claims, or descriptions.
 
 ### v0.4.0

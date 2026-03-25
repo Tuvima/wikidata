@@ -426,6 +426,132 @@ public sealed class WikidataReconciler : IDisposable
         return fetched.Where(s => s is not null).ToList()!;
     }
 
+    // ─── Wikipedia Section Content ──────────────────────────────────
+
+    /// <summary>
+    /// Gets the table of contents (section headings) for the Wikipedia articles associated with the specified entities.
+    /// Returns sections with titles, indices, and heading levels. Use <see cref="GetWikipediaSectionContentAsync"/>
+    /// with a section's <see cref="WikipediaSection.Index"/> to fetch its content.
+    /// </summary>
+    /// <param name="qids">Entity IDs to get sections for.</param>
+    /// <param name="language">Wikipedia language edition. Defaults to "en".</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>A dictionary mapping entity IDs to their Wikipedia article sections. Entities without a Wikipedia article are omitted.</returns>
+    public async Task<IReadOnlyDictionary<string, IReadOnlyList<WikipediaSection>>> GetWikipediaSectionsAsync(
+        IReadOnlyList<string> qids, string language = "en",
+        CancellationToken cancellationToken = default)
+    {
+        var entities = await _entityFetcher.FetchEntitiesWithSitelinksAsync(qids, language, cancellationToken)
+            .ConfigureAwait(false);
+
+        var siteKey = $"{language}wiki";
+        var titleToQid = new Dictionary<string, string>();
+
+        foreach (var (id, entity) in entities)
+        {
+            if (entity.Sitelinks?.TryGetValue(siteKey, out var sitelink) == true &&
+                !string.IsNullOrEmpty(sitelink.Title))
+            {
+                titleToQid[sitelink.Title] = id;
+            }
+        }
+
+        if (titleToQid.Count == 0)
+            return new Dictionary<string, IReadOnlyList<WikipediaSection>>();
+
+        var result = new Dictionary<string, IReadOnlyList<WikipediaSection>>(StringComparer.OrdinalIgnoreCase);
+
+        var tasks = titleToQid.Select(async kvp =>
+        {
+            await _concurrencyLimiter.WaitAsync(cancellationToken).ConfigureAwait(false);
+            try
+            {
+                var url = $"https://{language}.wikipedia.org/w/api.php?action=parse" +
+                          $"&page={Uri.EscapeDataString(kvp.Key)}&prop=tocdata&format=json";
+                var json = await _httpClient.GetStringAsync(url, cancellationToken).ConfigureAwait(false);
+                var response = System.Text.Json.JsonSerializer.Deserialize(json,
+                    Internal.Json.WikidataJsonContext.Default.ParseResponse);
+
+                if (response?.Parse?.TocData?.Sections is { Count: > 0 } sections)
+                {
+                    return (Qid: kvp.Value, Sections: (IReadOnlyList<WikipediaSection>)sections
+                        .Select(s => new WikipediaSection
+                        {
+                            Title = Internal.HtmlTextExtractor.StripInlineHtml(s.Line),
+                            Index = int.TryParse(s.Index, out var idx) ? idx : 0,
+                            Level = s.HLevel,
+                            Number = s.Number,
+                            Anchor = s.Anchor
+                        })
+                        .ToList());
+                }
+            }
+            catch
+            {
+                // Gracefully skip on failure
+            }
+            finally
+            {
+                _concurrencyLimiter.Release();
+            }
+            return (Qid: kvp.Value, Sections: (IReadOnlyList<WikipediaSection>?)null);
+        });
+
+        var fetched = await Task.WhenAll(tasks).ConfigureAwait(false);
+        foreach (var item in fetched)
+        {
+            if (item.Sections is not null)
+                result[item.Qid] = item.Sections;
+        }
+
+        return result;
+    }
+
+    /// <summary>
+    /// Fetches the content of a specific Wikipedia article section as plain text.
+    /// Use <see cref="GetWikipediaSectionsAsync"/> first to discover available sections and their indices.
+    /// </summary>
+    /// <param name="qid">The entity ID (e.g., "Q42").</param>
+    /// <param name="sectionIndex">The section index from <see cref="WikipediaSection.Index"/>.</param>
+    /// <param name="language">Wikipedia language edition. Defaults to "en".</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>The section content as plain text, or null if the entity has no Wikipedia article or the section doesn't exist.</returns>
+    public async Task<string?> GetWikipediaSectionContentAsync(
+        string qid, int sectionIndex, string language = "en",
+        CancellationToken cancellationToken = default)
+    {
+        var entities = await _entityFetcher.FetchEntitiesWithSitelinksAsync([qid], language, cancellationToken)
+            .ConfigureAwait(false);
+
+        var siteKey = $"{language}wiki";
+        if (!entities.TryGetValue(qid, out var entity) ||
+            entity.Sitelinks?.TryGetValue(siteKey, out var sitelink) != true ||
+            string.IsNullOrEmpty(sitelink!.Title))
+        {
+            return null;
+        }
+
+        try
+        {
+            var url = $"https://{language}.wikipedia.org/w/api.php?action=parse" +
+                      $"&page={Uri.EscapeDataString(sitelink.Title)}&section={sectionIndex}" +
+                      "&prop=text&format=json";
+            var json = await _httpClient.GetStringAsync(url, cancellationToken).ConfigureAwait(false);
+            var response = System.Text.Json.JsonSerializer.Deserialize(json,
+                Internal.Json.WikidataJsonContext.Default.ParseResponse);
+
+            if (response?.Error is not null || response?.Parse?.Text?.Html is null)
+                return null;
+
+            var text = Internal.HtmlTextExtractor.ExtractText(response.Parse.Text.Html);
+            return string.IsNullOrWhiteSpace(text) ? null : text;
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
     // ─── Reverse Lookup by External ID ────────────────────────────
 
     /// <summary>

@@ -50,6 +50,7 @@ src/
 │   ├── EntityRevision.cs                    # EntityId, RevisionId, Timestamp (lightweight staleness check)
 │   ├── EntityChange.cs                      # EntityId, ChangeType, Timestamp, User, Comment, RevisionId
 │   ├── WikipediaSummary.cs                  # EntityId, Title, Extract, Description, ThumbnailUrl, ArticleUrl
+│   ├── WikipediaSection.cs                  # Title, Index, Level, Number, Anchor (TOC entry)
 │   └── Internal/
 │       ├── WikidataSearchClient.cs          # Dual search + suggest + external ID lookup
 │       ├── WikidataEntityFetcher.cs         # Entity fetching with rank hierarchy + sitelinks
@@ -58,6 +59,7 @@ src/
 │       ├── SubclassResolver.cs              # P279 hierarchy BFS with ConcurrentDictionary cache
 │       ├── ResilientHttpClient.cs           # Retry-on-429, exponential backoff, maxlag
 │       ├── EntityMapper.cs                  # Internal DTO → public model mapping
+│       ├── HtmlTextExtractor.cs             # Lightweight HTML-to-text for Wikipedia parse output
 │       ├── FuzzyMatcher.cs                  # Token-sort-ratio string matching
 │       ├── PropertyMatcher.cs               # Type-specific value matching
 │       ├── PropertyPath.cs                  # "P131/P17" chained property resolution
@@ -67,6 +69,7 @@ src/
 │           ├── WbSearchEntitiesResponse.cs   # wbsearchentities API response
 │           ├── WbGetEntitiesResponse.cs      # wbgetentities API response (claims, qualifiers, sitelinks)
 │           ├── QuerySearchResponse.cs        # Full-text search API response
+│           ├── ParseResponse.cs               # action=parse API response (sections, section content)
 │           ├── RevisionQueryResponse.cs       # Revision query API response (staleness detection)
 │           ├── RecentChangesResponse.cs      # Recent changes API response
 │           └── WikipediaSummaryResponse.cs   # Wikipedia REST API response
@@ -103,6 +106,8 @@ tests/
 | `LookupByExternalIdAsync(propertyId, value)` | Find entity by ISBN/IMDB/VIAF/ORCID via haswbstatement |
 | `GetPropertyLabelsAsync(propertyIds)` | P569 → "date of birth" |
 | `GetImageUrlsAsync(qids)` | Wikimedia Commons image URLs from P18 claims |
+| `GetWikipediaSectionsAsync(qids)` | Wikipedia article table of contents (section names, levels, indices) |
+| `GetWikipediaSectionContentAsync(qid, index)` | Specific Wikipedia section as plain text |
 | `GetRevisionIdsAsync(qids)` | Lightweight staleness check — returns only revision IDs and timestamps |
 | `GetRecentChangesAsync(qids, since)` | Detailed entity change history for audit/monitoring |
 
@@ -156,7 +161,7 @@ dotnet test
 dotnet pack --configuration Release
 ```
 
-Test counts: ~21 unit tests + ~31 integration tests = ~52 total.
+Test counts: ~21 unit tests + ~40 integration tests = ~61 total.
 
 ## Key Design Decisions
 
@@ -177,6 +182,8 @@ Test counts: ~21 unit tests + ~31 integration tests = ~52 total.
 | `action=query&list=search` | Full-text search across entity content |
 | `wbgetentities` | Fetch entity data (labels, descriptions, aliases, claims, sitelinks) |
 | Wikipedia REST API `/page/summary/` | Article summaries with thumbnails |
+| Wikipedia `action=parse` | Section TOC (tocdata) and section content (text) |
+| `action=query&prop=revisions` | Lightweight revision ID lookup for staleness detection |
 | `action=query&list=recentchanges` | Entity change monitoring |
 | CirrusSearch `haswbstatement:` | External ID reverse lookup |
 

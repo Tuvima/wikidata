@@ -509,6 +509,77 @@ public class IntegrationTests : IDisposable
         Assert.Empty(revisions);
     }
 
+    // ─── Wikipedia Section Content ─────────────────────────────────
+
+    [Fact]
+    public async Task GetWikipediaSectionsAsync_ShouldReturnSections()
+    {
+        var sections = await _reconciler.GetWikipediaSectionsAsync(["Q42"]); // Douglas Adams
+
+        Assert.True(sections.ContainsKey("Q42"));
+        var toc = sections["Q42"];
+        Assert.NotEmpty(toc);
+
+        // Douglas Adams should have well-known sections
+        var titles = toc.Select(s => s.Title).ToList();
+        Assert.Contains(titles, t => t.Contains("Career", StringComparison.OrdinalIgnoreCase));
+
+        // Verify section structure
+        var first = toc[0];
+        Assert.False(string.IsNullOrEmpty(first.Title));
+        Assert.True(first.Index > 0);
+        Assert.True(first.Level >= 2);
+        Assert.False(string.IsNullOrEmpty(first.Number));
+
+        // Section titles should not contain HTML tags
+        foreach (var section in toc)
+            Assert.DoesNotContain("<", section.Title);
+    }
+
+    [Fact]
+    public async Task GetWikipediaSectionsAsync_NoArticle_ShouldReturnEmpty()
+    {
+        // Q97093183 is unlikely to have an English Wikipedia article
+        var sections = await _reconciler.GetWikipediaSectionsAsync(["Q97093183"]);
+
+        Assert.NotNull(sections);
+        Assert.False(sections.ContainsKey("Q97093183"));
+    }
+
+    [Fact]
+    public async Task GetWikipediaSectionContentAsync_ShouldReturnText()
+    {
+        // First get sections to find a valid index
+        var sections = await _reconciler.GetWikipediaSectionsAsync(["Q42"]);
+        var toc = sections["Q42"];
+        var firstSection = toc[0];
+
+        var content = await _reconciler.GetWikipediaSectionContentAsync("Q42", firstSection.Index);
+
+        Assert.NotNull(content);
+        Assert.True(content.Length > 50, "Section content should be substantial");
+        // Should be plain text — no HTML tags
+        Assert.DoesNotContain("<div", content);
+        Assert.DoesNotContain("<p>", content);
+        Assert.DoesNotContain("<span", content);
+    }
+
+    [Fact]
+    public async Task GetWikipediaSectionContentAsync_InvalidSection_ShouldReturnNull()
+    {
+        var content = await _reconciler.GetWikipediaSectionContentAsync("Q42", 9999);
+
+        Assert.Null(content);
+    }
+
+    [Fact]
+    public async Task GetWikipediaSectionContentAsync_NoArticle_ShouldReturnNull()
+    {
+        var content = await _reconciler.GetWikipediaSectionContentAsync("Q97093183", 1);
+
+        Assert.Null(content);
+    }
+
     // ─── Entity Change Monitoring ───────────────────────────────────
 
     [Fact]
