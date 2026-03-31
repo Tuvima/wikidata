@@ -25,6 +25,9 @@ This is the first .NET Wikidata reconciliation library, filling a gap in the eco
 | An ISBN or IMDB ID | The matching Wikidata entity, without fuzzy matching |
 | A list of 10,000 names | Parallel batch processing with progress streaming |
 | A prefix like "Doug..." | Autocomplete suggestions for interactive UIs |
+| A name with diacritics like "Shōgun" | Matches regardless of accents with diacritic-insensitive mode |
+| A work like "Hitchhiker's Guide" | All editions and translations, filterable by type (audiobook, paperback, etc.) |
+| A query in Japanese and English | Multi-language search that finds the best match across both languages |
 | Cached entity data | Lightweight staleness check — only re-fetch what actually changed |
 
 ## What is Reconciliation?
@@ -399,6 +402,126 @@ var results = await reconciler.ReconcileAsync(new ReconciliationRequest
 
 The library uses a language fallback chain: if a label/description is missing in the requested language, it tries the subtag parent ("de-ch" falls back to "de"), then "mul" (multilingual), then "en" (English).
 
+### Multi-Type Filtering with CirrusSearch
+
+Filter by multiple types (OR logic) with CirrusSearch for better recall. Also override the subclass walk depth per-request:
+
+```csharp
+var results = await reconciler.ReconcileAsync(new ReconciliationRequest
+{
+    Query = "Shogun",
+    Types = ["Q5398426", "Q15416"],  // TV series OR TV program
+    TypeHierarchyDepth = 3,          // walk P279 up to 3 levels
+});
+```
+
+### Multi-Language Search
+
+Search in multiple languages concurrently. Results are deduplicated by QID:
+
+```csharp
+var results = await reconciler.ReconcileAsync(new ReconciliationRequest
+{
+    Query = "千と千尋の神隠し",
+    Languages = ["ja", "en"],
+});
+```
+
+### Diacritic-Insensitive Search
+
+Match entities regardless of accents and diacritical marks:
+
+```csharp
+var results = await reconciler.ReconcileAsync(new ReconciliationRequest
+{
+    Query = "Shogun",
+    DiacriticInsensitive = true,  // matches "Shōgun"
+});
+```
+
+### Query Pre-Cleaning
+
+Strip noise from queries before search using built-in or custom cleaners:
+
+```csharp
+var results = await reconciler.ReconcileAsync(new ReconciliationRequest
+{
+    Query = "The Hitchhiker's Guide to the Galaxy (Unabridged)",
+    Cleaners = [QueryCleaners.StripParenthetical()],
+});
+
+// Or use all built-in cleaners at once
+var results = await reconciler.ReconcileAsync(new ReconciliationRequest
+{
+    Query = "Dune: Part Two S01E03 (Special Edition)",
+    Cleaners = QueryCleaners.All(),
+});
+```
+
+### Entity Label Resolution
+
+Auto-resolve entity-valued claims to human-readable labels:
+
+```csharp
+var entities = await reconciler.GetEntitiesAsync(["Q42"], resolveEntityLabels: true);
+var adams = entities["Q42"];
+
+foreach (var claim in adams.Claims["P27"])
+{
+    // EntityLabel is auto-populated: "United Kingdom" instead of just "Q145"
+    Console.WriteLine($"Citizenship: {claim.Value?.EntityLabel}"); // "United Kingdom"
+    Console.WriteLine($"Display: {claim.Value?.ToDisplayString()}"); // "United Kingdom"
+}
+```
+
+### Work-to-Edition Pivoting
+
+Navigate between works and their editions/translations:
+
+```csharp
+// Get all editions of a work
+var editions = await reconciler.GetEditionsAsync("Q190192"); // Hitchhiker's Guide
+
+// Filter to audiobook editions only
+var audiobooks = await reconciler.GetEditionsAsync("Q190192",
+    filterTypes: ["Q122731938"]); // audiobook edition
+
+// Find the parent work from an edition
+var work = await reconciler.GetWorkForEditionAsync("Q15228");
+```
+
+### Wikipedia Summary Language Fallback
+
+Fetch summaries with automatic fallback to other language editions:
+
+```csharp
+// Uses default fallback chain: requested → subtag parent → "en"
+var summaries = await reconciler.GetWikipediaSummariesAsync(["Q42"], "de", fallbackLanguages: null);
+
+// Or specify custom fallback languages
+var summaries = await reconciler.GetWikipediaSummariesAsync(["Q42"], "ja",
+    fallbackLanguages: ["zh", "en"]);
+
+// Check which language was actually used
+Console.WriteLine(summaries[0].Language); // "de", "en", etc.
+```
+
+### Pseudonym Detection
+
+Find pen names and pseudonyms for authors:
+
+```csharp
+// From a book entity — finds authors via P50, then checks P742
+var pseudonyms = await reconciler.GetAuthorPseudonymsAsync("Q190192");
+
+// Or from an author entity directly
+var pseudonyms = await reconciler.GetAuthorPseudonymsAsync("Q42");
+foreach (var p in pseudonyms)
+{
+    Console.WriteLine($"{p.AuthorLabel}: {string.Join(", ", p.Pseudonyms)}");
+}
+```
+
 ### Cancellation
 
 All async methods accept a `CancellationToken`:
@@ -465,6 +588,9 @@ var reconciler = new WikidataReconciler(new WikidataReconcilerOptions
     TypeHierarchyDepth = 0,      // 0 = direct P31 match only (default, fast)
                                   // 5 = walk up to 5 levels of P279 (subclass of)
                                   // e.g., "novel" matches "literary work" at depth 1
+
+    // Display-friendly labels (include Wikipedia sitelink titles in scoring)
+    IncludeSitelinkLabels = false,  // opt-in: matches "Frankenstein" vs formal label
 
     // Unique identifier shortcut (score 100 when a unique ID matches exactly)
     // UniqueIdProperties = new HashSet<string> { "P213", "P214", ... } // defaults included
@@ -667,6 +793,19 @@ The `ScoreBreakdown` contains:
 Results are sorted by score descending, with QID number as a tiebreaker (lower QID = older, more established entity).
 
 ## What's New by Version
+
+### v0.6.0
+
+- **Type-filtered search** — when types are specified, CirrusSearch `haswbstatement:P31=QID` runs at query time for dramatically better type recall. New `Types` property accepts multiple types with OR logic. Per-request `TypeHierarchyDepth` override for P279 subclass walking.
+- **Multi-language reconciliation** — new `Languages` property searches concurrently in multiple languages and deduplicates by QID. Solves the multilingual matching problem without multiple API calls.
+- **Entity label resolution** — `GetEntitiesAsync(qids, resolveEntityLabels: true)` auto-resolves entity-valued claims (e.g., P50 author → Q42) to human-readable labels in the requested language. `WikidataValue.EntityLabel` property and improved `ToDisplayString()`.
+- **Work-to-edition pivoting** — `GetEditionsAsync` follows P747 (has edition or translation) with optional P31 type filtering. `GetWorkForEditionAsync` navigates the reverse direction via P629.
+- **Diacritic-aware search** — `DiacriticInsensitive` flag strips accents so "Shōgun" matches "Shogun". Runs additional ASCII-normalized searches for better recall.
+- **Display-friendly labels** — `IncludeSitelinkLabels` option adds Wikipedia sitelink titles to the scoring pool. Matches common names like "Frankenstein" instead of "Frankenstein; or, The Modern Prometheus".
+- **Wikipedia summary language fallback** — new overload tries multiple language editions, returning the first available. `WikipediaSummary.Language` indicates which edition was used.
+- **Query pre-cleaning** — `Cleaners` pipeline strips noise like "(Unabridged)", "S01E02", "Vol. 3" before search. Built-in `QueryCleaners` presets included.
+- **Pseudonym detection** — `GetAuthorPseudonymsAsync` finds P742 pseudonyms for authors, navigating through P50 author claims.
+- **Caching infrastructure** — `CachingDelegatingHandler` abstract base class provides a zero-dependency template for HTTP-level caching with any backend.
 
 ### v0.5.0
 

@@ -27,10 +27,10 @@ WikidataReconciler (public entry point)
 
 ### Reconciliation Pipeline (4 stages)
 
-1. **Dual Search** — `wbsearchentities` (autocomplete) and `action=query&list=search` (full-text) run concurrently, results merged with full-text first
-2. **Entity Fetching** — `wbgetentities` batched (max 50), fetches labels/descriptions/aliases/claims with language fallback
-3. **Scoring** — `score = (label_score * 1.0 + Σ(prop_score * 0.4)) / (1.0 + 0.4 * num_properties)`. Type penalty halves score if type requested but entity has no P31. Unique ID shortcut sets score to 100 on exact authority ID match.
-4. **Type Filtering** — Direct P31 match or P279 subclass walk (configurable depth). Sort by score desc, QID number asc as tiebreaker.
+1. **Dual Search** — `wbsearchentities` (autocomplete) and `action=query&list=search` (full-text) run concurrently, results merged with full-text first. When types are specified, a CirrusSearch `haswbstatement:P31=QID` query also runs for better type recall. Multi-language search runs all languages concurrently and deduplicates. Diacritic-insensitive mode adds ASCII-normalized search variants.
+2. **Entity Fetching** — `wbgetentities` batched (max 50), fetches labels/descriptions/aliases/claims with language fallback. Optionally includes sitelinks for display-friendly label matching.
+3. **Scoring** — `score = (label_score * 1.0 + Σ(prop_score * 0.4)) / (1.0 + 0.4 * num_properties)`. Type penalty halves score if type requested but entity has no P31. Unique ID shortcut sets score to 100 on exact authority ID match. Diacritic-insensitive scoring strips accents before comparison.
+4. **Type Filtering** — Direct P31 match (multi-type OR logic) or P279 subclass walk (configurable depth, per-request override). Sort by score desc, QID number asc as tiebreaker.
 
 ## Project Structure
 
@@ -38,21 +38,25 @@ WikidataReconciler (public entry point)
 src/
 ├── Tuvima.WikidataReconciliation/           # Core library
 │   ├── WikidataReconciler.cs                # Main entry point — all public methods
-│   ├── WikidataReconcilerOptions.cs         # 13 configuration options
-│   ├── ReconciliationRequest.cs             # Query, Type, ExcludeTypes, Properties, Language, Limit
+│   ├── WikidataReconcilerOptions.cs         # 14 configuration options
+│   ├── ReconciliationRequest.cs             # Query, Type/Types, ExcludeTypes, Properties, Language/Languages, Limit, DiacriticInsensitive, Cleaners, TypeHierarchyDepth
 │   ├── ReconciliationResult.cs              # Id, Name, Description, Score, Match, Types, Breakdown
 │   ├── ScoreBreakdown.cs                    # LabelScore, PropertyScores, TypeMatched, UniqueIdMatch
 │   ├── SuggestResult.cs                     # Id, Name, Description
 │   ├── PropertyConstraint.cs                # PropertyId, Value
 │   ├── WikidataEntityInfo.cs                # Id, Label, Description, Aliases, Claims, LastRevisionId, Modified
 │   ├── WikidataClaim.cs                     # PropertyId, Rank, Value, Qualifiers, QualifierOrder
-│   ├── WikidataValue.cs                     # Kind, RawValue, EntityId, Time, Quantity, Coords + ToDisplayString()
+│   ├── WikidataValue.cs                     # Kind, RawValue, EntityId, EntityLabel, Time, Quantity, Coords + ToDisplayString()
 │   ├── EntityRevision.cs                    # EntityId, RevisionId, Timestamp (lightweight staleness check)
 │   ├── EntityChange.cs                      # EntityId, ChangeType, Timestamp, User, Comment, RevisionId
-│   ├── WikipediaSummary.cs                  # EntityId, Title, Extract, Description, ThumbnailUrl, ArticleUrl
+│   ├── WikipediaSummary.cs                  # EntityId, Title, Extract, Description, ThumbnailUrl, ArticleUrl, Language
 │   ├── WikipediaSection.cs                  # Title, Index, Level, Number, Anchor (TOC entry)
+│   ├── EditionInfo.cs                       # EntityId, Label, Description, Types, Claims (P747 edition data)
+│   ├── PseudonymInfo.cs                     # AuthorEntityId, AuthorLabel, Pseudonyms (P742)
+│   ├── QueryCleaners.cs                     # Built-in title pre-cleaning functions
+│   ├── CachingDelegatingHandler.cs          # Abstract HTTP caching base class
 │   └── Internal/
-│       ├── WikidataSearchClient.cs          # Dual search + suggest + external ID lookup
+│       ├── WikidataSearchClient.cs          # Dual search + suggest + external ID lookup + type-filtered + multi-language
 │       ├── WikidataEntityFetcher.cs         # Entity fetching with rank hierarchy + sitelinks
 │       ├── ReconciliationScorer.cs          # Weighted scoring formula + unique ID shortcut
 │       ├── TypeChecker.cs                   # P31 type matching (sync + async with P279)
@@ -60,7 +64,7 @@ src/
 │       ├── ResilientHttpClient.cs           # Retry-on-429, exponential backoff, maxlag
 │       ├── EntityMapper.cs                  # Internal DTO → public model mapping
 │       ├── HtmlTextExtractor.cs             # Lightweight HTML-to-text for Wikipedia parse output
-│       ├── FuzzyMatcher.cs                  # Token-sort-ratio string matching
+│       ├── FuzzyMatcher.cs                  # Token-sort-ratio string matching + diacritic stripping
 │       ├── PropertyMatcher.cs               # Type-specific value matching
 │       ├── PropertyPath.cs                  # "P131/P17" chained property resolution
 │       ├── LanguageFallback.cs              # Language fallback chain
@@ -93,16 +97,18 @@ tests/
 |---|---|
 | `ReconcileAsync(query)` | Match text to Wikidata entities |
 | `ReconcileAsync(query, type)` | Match with type filter (e.g., "Q5" for humans) |
-| `ReconcileAsync(ReconciliationRequest)` | Full options: type, properties, language, limit, exclude types |
+| `ReconcileAsync(ReconciliationRequest)` | Full options: type/types, properties, language/languages, limit, exclude types, diacritics, cleaners |
 | `ReconcileBatchAsync(requests)` | Parallel batch with concurrency limiting |
 | `ReconcileBatchStreamAsync(requests)` | `IAsyncEnumerable` — yields results as they complete |
 | `SuggestAsync(prefix)` | Entity autocomplete |
 | `SuggestPropertiesAsync(prefix)` | Property autocomplete (wbsearchentities type=property) |
 | `SuggestTypesAsync(prefix)` | Type/class autocomplete |
 | `GetEntitiesAsync(qids)` | Full entity data with claims and qualifiers |
+| `GetEntitiesAsync(qids, resolveEntityLabels)` | Full entity data with auto-resolved entity reference labels |
 | `GetPropertiesAsync(qids, propertyIds)` | Specific properties only |
 | `GetWikipediaUrlsAsync(qids)` | QID → Wikipedia article URL via sitelinks |
 | `GetWikipediaSummariesAsync(qids)` | Wikipedia article summaries (extract, thumbnail, URL) |
+| `GetWikipediaSummariesAsync(qids, lang, fallbacks)` | Wikipedia summaries with language fallback |
 | `LookupByExternalIdAsync(propertyId, value)` | Find entity by ISBN/IMDB/VIAF/ORCID via haswbstatement |
 | `GetPropertyLabelsAsync(propertyIds)` | P569 → "date of birth" |
 | `GetImageUrlsAsync(qids)` | Wikimedia Commons image URLs from P18 claims |
@@ -110,6 +116,9 @@ tests/
 | `GetWikipediaSectionContentAsync(qid, index)` | Specific Wikipedia section as plain text |
 | `GetRevisionIdsAsync(qids)` | Lightweight staleness check — returns only revision IDs and timestamps |
 | `GetRecentChangesAsync(qids, since)` | Detailed entity change history for audit/monitoring |
+| `GetEditionsAsync(workQid, filterTypes?)` | Fetch editions/translations (P747) of a work entity |
+| `GetWorkForEditionAsync(editionQid)` | Find parent work (P629) from an edition |
+| `GetAuthorPseudonymsAsync(entityQid)` | Detect pseudonyms (P742) for authors (P50) |
 
 ### Configuration Options (WikidataReconcilerOptions)
 
@@ -127,6 +136,7 @@ tests/
 | `MaxRetries` | 3 | Retry attempts on HTTP 429 |
 | `MaxLag` | 5 | Wikimedia maxlag parameter (seconds) |
 | `TypeHierarchyDepth` | 0 | P279 subclass walk depth (0 = off) |
+| `IncludeSitelinkLabels` | `false` | Include Wikipedia sitelink titles in scoring label pool |
 | `UniqueIdProperties` | 13 IDs | Properties that trigger score=100 shortcut |
 
 ### ASP.NET Core Endpoints (MapReconciliation)
@@ -185,7 +195,7 @@ Test counts: ~21 unit tests + ~40 integration tests = ~61 total.
 | Wikipedia `action=parse` | Section TOC (tocdata) and section content (text) |
 | `action=query&prop=revisions` | Lightweight revision ID lookup for staleness detection |
 | `action=query&list=recentchanges` | Entity change monitoring |
-| CirrusSearch `haswbstatement:` | External ID reverse lookup |
+| CirrusSearch `haswbstatement:` | External ID reverse lookup + type-filtered search |
 
 ## CI/CD
 
@@ -195,6 +205,17 @@ GitHub Actions workflow (`.github/workflows/ci.yml`):
 - Integration tests run with `continue-on-error` (depend on Wikidata availability)
 - NuGet pack as build artifact
 - Auto-publish to NuGet on every push to main (requires `NUGET_API_KEY` secret)
+
+## Mandatory Rules
+
+1. **Documentation on every feature change.** Every new public method, property, option, or behavior change MUST be reflected in BOTH `CLAUDE.md` (architecture, API reference, project structure) AND `README.md` (usage examples, "What's New" section). Never ship a feature without updating docs.
+
+2. **Version bump on every feature change.** Any commit that adds, removes, or changes public API surface MUST increment the package version in BOTH `.csproj` files (`Tuvima.WikidataReconciliation` and `Tuvima.WikidataReconciliation.AspNetCore`). Use semantic versioning:
+   - **Patch** (0.x.**Y**) — bug fixes, internal refactors, doc-only changes
+   - **Minor** (0.**X**.0) — new features, new public methods/properties/options, backward-compatible additions
+   - **Major** (**X**.0.0) — breaking changes to existing public API
+
+3. **Tests must pass.** Run `dotnet build` (0 warnings, 0 errors) and `dotnet test --filter "Category!=Integration"` (all pass) before committing.
 
 ## Attribution
 
