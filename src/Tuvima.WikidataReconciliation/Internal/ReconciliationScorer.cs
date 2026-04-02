@@ -95,7 +95,8 @@ internal sealed class ReconciliationScorer
 
     /// <summary>
     /// Scores a single property constraint against an entity's claims.
-    /// Returns the best match across all claim values for the (root) property.
+    /// For single-value constraints, returns the best match across all claim values.
+    /// For multi-value constraints, returns the average of the best match for each constraint value.
     /// </summary>
     private static int ScoreProperty(WikidataEntity entity, PropertyConstraint constraint)
     {
@@ -106,21 +107,32 @@ internal sealed class ReconciliationScorer
         if (claimValues.Count == 0)
             return 0;
 
-        var bestScore = 0;
-        foreach (var claimValue in claimValues)
+        string? dataType = null;
+        if (entity.Claims?.TryGetValue(constraint.PropertyId, out var claims) == true)
         {
-            string? dataType = null;
-            if (entity.Claims?.TryGetValue(constraint.PropertyId, out var claims) == true)
-            {
-                dataType = claims.FirstOrDefault()?.MainSnak?.DataType;
-            }
-
-            var score = PropertyMatcher.Match(constraint.Value, claimValue, dataType);
-            if (score > bestScore)
-                bestScore = score;
+            dataType = claims.FirstOrDefault()?.MainSnak?.DataType;
         }
 
-        return bestScore;
+        var effectiveValues = constraint.GetEffectiveValues();
+        if (effectiveValues.Count == 0)
+            return 0;
+
+        // For each constraint value, find the best match across all entity claim values.
+        // The property score is the average of these best-match scores.
+        var totalScore = 0.0;
+        foreach (var constraintValue in effectiveValues)
+        {
+            var bestScore = 0;
+            foreach (var claimValue in claimValues)
+            {
+                var score = PropertyMatcher.Match(constraintValue, claimValue, dataType);
+                if (score > bestScore)
+                    bestScore = score;
+            }
+            totalScore += bestScore;
+        }
+
+        return (int)Math.Round(totalScore / effectiveValues.Count);
     }
 
     /// <summary>

@@ -842,16 +842,102 @@ public sealed class WikidataReconciler : IDisposable
 
     /// <summary>
     /// Fetches the content of a specific Wikipedia article section as plain text.
+    /// The section's own heading is automatically stripped from the returned content.
     /// Use <see cref="GetWikipediaSectionsAsync"/> first to discover available sections and their indices.
     /// </summary>
     /// <param name="qid">The entity ID (e.g., "Q42").</param>
     /// <param name="sectionIndex">The section index from <see cref="WikipediaSection.Index"/>.</param>
     /// <param name="language">Wikipedia language edition. Defaults to "en".</param>
     /// <param name="cancellationToken">Cancellation token.</param>
-    /// <returns>The section content as plain text, or null if the entity has no Wikipedia article or the section doesn't exist.</returns>
+    /// <returns>The section content as plain text (heading stripped), or null if the entity has no Wikipedia article or the section doesn't exist.</returns>
     public async Task<string?> GetWikipediaSectionContentAsync(
         string qid, int sectionIndex, string language = "en",
         CancellationToken cancellationToken = default)
+    {
+        var pageTitle = await ResolveWikipediaTitle(qid, language, cancellationToken).ConfigureAwait(false);
+        if (pageTitle is null)
+            return null;
+
+        var text = await FetchSectionText(pageTitle, sectionIndex, language, cancellationToken)
+            .ConfigureAwait(false);
+        if (text is null)
+            return null;
+
+        text = Internal.HtmlTextExtractor.StripLeadingHeading(text);
+        return string.IsNullOrWhiteSpace(text) ? null : text.Trim();
+    }
+
+    /// <summary>
+    /// Fetches a Wikipedia section and all its subsections as a structured list.
+    /// Each entry contains the subsection title and its body content (heading stripped).
+    /// The top-level section is the first element; nested subsections follow in document order.
+    /// </summary>
+    /// <param name="qid">The entity ID (e.g., "Q83495").</param>
+    /// <param name="sectionIndex">The section index from <see cref="WikipediaSection.Index"/>.</param>
+    /// <param name="language">Wikipedia language edition. Defaults to "en".</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>
+    /// A list of <see cref="SectionContent"/> for the section and its subsections,
+    /// or null if the entity has no Wikipedia article or the section doesn't exist.
+    /// </returns>
+    public async Task<IReadOnlyList<SectionContent>?> GetWikipediaSectionWithSubsectionsAsync(
+        string qid, int sectionIndex, string language = "en",
+        CancellationToken cancellationToken = default)
+    {
+        // Get the TOC to determine subsection range
+        var toc = await GetWikipediaSectionsAsync([qid], language, cancellationToken).ConfigureAwait(false);
+        if (!toc.TryGetValue(qid, out var sections))
+            return null;
+
+        // Find the target section and its subsections
+        var targetSection = sections.FirstOrDefault(s => s.Index == sectionIndex);
+        if (targetSection is null)
+            return null;
+
+        var sectionIndices = new List<(int Index, string Title)> { (targetSection.Index, targetSection.Title) };
+
+        // Collect subsections: everything after our section that has a deeper heading level,
+        // stopping at the next section at the same or higher level.
+        var foundTarget = false;
+        foreach (var s in sections)
+        {
+            if (s.Index == sectionIndex)
+            {
+                foundTarget = true;
+                continue;
+            }
+            if (!foundTarget)
+                continue;
+            if (s.Level <= targetSection.Level)
+                break;
+            sectionIndices.Add((s.Index, s.Title));
+        }
+
+        var pageTitle = await ResolveWikipediaTitle(qid, language, cancellationToken).ConfigureAwait(false);
+        if (pageTitle is null)
+            return null;
+
+        // Fetch all sections concurrently
+        var fetchTasks = sectionIndices.Select(async si =>
+        {
+            var text = await FetchSectionText(pageTitle, si.Index, language, cancellationToken)
+                .ConfigureAwait(false);
+            if (text is not null)
+                text = Internal.HtmlTextExtractor.StripLeadingHeading(text);
+            return (si.Title, Content: string.IsNullOrWhiteSpace(text) ? null : text!.Trim());
+        });
+
+        var results = await Task.WhenAll(fetchTasks).ConfigureAwait(false);
+
+        var content = results
+            .Where(r => r.Content is not null)
+            .Select(r => new SectionContent { Title = r.Title, Content = r.Content! })
+            .ToList();
+
+        return content.Count > 0 ? content : null;
+    }
+
+    private async Task<string?> ResolveWikipediaTitle(string qid, string language, CancellationToken cancellationToken)
     {
         var entities = await _entityFetcher.FetchEntitiesWithSitelinksAsync([qid], language, cancellationToken)
             .ConfigureAwait(false);
@@ -864,10 +950,15 @@ public sealed class WikidataReconciler : IDisposable
             return null;
         }
 
+        return sitelink.Title;
+    }
+
+    private async Task<string?> FetchSectionText(string pageTitle, int sectionIndex, string language, CancellationToken cancellationToken)
+    {
         try
         {
             var url = $"https://{language}.wikipedia.org/w/api.php?action=parse" +
-                      $"&page={Uri.EscapeDataString(sitelink.Title)}&section={sectionIndex}" +
+                      $"&page={Uri.EscapeDataString(pageTitle)}&section={sectionIndex}" +
                       "&prop=text&format=json";
             var json = await _httpClient.GetStringAsync(url, cancellationToken).ConfigureAwait(false);
             var response = System.Text.Json.JsonSerializer.Deserialize(json,
@@ -1176,6 +1267,161 @@ public sealed class WikidataReconciler : IDisposable
         return workEntities.TryGetValue(workIds[0], out var workEntity)
             ? EntityMapper.MapEntity(workEntity, lang)
             : null;
+    }
+
+    // ─── Child Entity Discovery ──────────────────────────────────────
+
+    /// <summary>
+    /// Discovers child entities of a parent by traversing a relationship property,
+    /// optionally filtered by P31 type classes.
+    /// </summary>
+    /// <param name="parentQid">The parent entity's Wikidata QID.</param>
+    /// <param name="relationshipProperty">
+    /// The Wikidata property that links parent to children (e.g., "P527" for "has parts").
+    /// Prefix with "^" for reverse traversal (e.g., "^P179" finds entities whose P179 points to the parent).
+    /// </param>
+    /// <param name="childTypeFilter">
+    /// Optional P31 class QIDs to filter children by. When null or empty, all children are returned.
+    /// </param>
+    /// <param name="childProperties">
+    /// Property codes to fetch for each discovered child entity.
+    /// </param>
+    /// <param name="language">Language for labels and monolingual text values. Defaults to configured language.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>
+    /// Ordered list of child entities. Ordered by P1545 (series ordinal) if available,
+    /// then by P577 (publication date), then by label alphabetically.
+    /// </returns>
+    public async Task<IReadOnlyList<ChildEntityInfo>> GetChildEntitiesAsync(
+        string parentQid,
+        string relationshipProperty,
+        IReadOnlyList<string>? childTypeFilter = null,
+        IReadOnlyList<string>? childProperties = null,
+        string? language = null,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(parentQid);
+        ArgumentException.ThrowIfNullOrWhiteSpace(relationshipProperty);
+
+        var lang = language ?? _options.Language;
+        var isReverse = relationshipProperty.StartsWith('^');
+        var propertyId = isReverse ? relationshipProperty[1..] : relationshipProperty;
+
+        List<string> childIds;
+
+        if (isReverse)
+        {
+            // Reverse traversal: find entities whose propertyId points to parentQid
+            var query = $"haswbstatement:{propertyId}={parentQid}";
+            childIds = await _searchClient.SearchAllByStatementAsync(query, childTypeFilter, cancellationToken)
+                .ConfigureAwait(false);
+        }
+        else
+        {
+            // Forward traversal: get property values from parent
+            var parentEntities = await _entityFetcher.FetchEntitiesAsync([parentQid], lang, cancellationToken)
+                .ConfigureAwait(false);
+
+            if (!parentEntities.TryGetValue(parentQid, out var parentEntity))
+                return [];
+
+            childIds = WikidataEntityFetcher.GetClaimValues(parentEntity, propertyId)
+                .Select(dv => EntityMapper.MapDataValue(dv, "wikibase-item"))
+                .Where(v => v.Kind == WikidataValueKind.EntityId && !string.IsNullOrEmpty(v.EntityId))
+                .Select(v => v.EntityId!)
+                .ToList();
+        }
+
+        if (childIds.Count == 0)
+            return [];
+
+        // Batch-fetch all child entities
+        var childEntities = await _entityFetcher.FetchEntitiesAsync(childIds, lang, cancellationToken)
+            .ConfigureAwait(false);
+
+        var filterSet = childTypeFilter is { Count: > 0 }
+            ? new HashSet<string>(childTypeFilter, StringComparer.OrdinalIgnoreCase)
+            : null;
+
+        // Build the properties set to fetch (always include P1545 and P577 for sorting)
+        var requestedProps = childProperties is { Count: > 0 }
+            ? new HashSet<string>(childProperties, StringComparer.OrdinalIgnoreCase)
+            : new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        var sortableResults = new List<(ChildEntityInfo Info, string? DateSort)>();
+        foreach (var (id, entity) in childEntities)
+        {
+            // Apply type filter for forward traversal (reverse already filtered via CirrusSearch)
+            if (!isReverse && filterSet is not null)
+            {
+                var types = WikidataEntityFetcher.GetTypeIds(entity, _options.TypePropertyId);
+                if (!types.Any(t => filterSet.Contains(t)))
+                    continue;
+            }
+
+            LanguageFallback.TryGetValue(entity.Labels, lang, out var label);
+            LanguageFallback.TryGetValue(entity.Descriptions, lang, out var description);
+
+            // Extract ordinal from P1545
+            int? ordinal = null;
+            var ordinalValues = WikidataEntityFetcher.GetClaimValues(entity, "P1545");
+            if (ordinalValues.Count > 0)
+            {
+                var ordinalValue = EntityMapper.MapDataValue(ordinalValues[0], "string");
+                if (int.TryParse(ordinalValue.RawValue, out var parsed))
+                    ordinal = parsed;
+            }
+
+            // Extract P577 date from raw entity for sorting
+            string? dateSort = null;
+            var dateValues = WikidataEntityFetcher.GetClaimValues(entity, "P577");
+            if (dateValues.Count > 0)
+            {
+                var dateValue = EntityMapper.MapDataValue(dateValues[0], "time");
+                if (dateValue.Kind == WikidataValueKind.Time)
+                    dateSort = dateValue.RawValue;
+            }
+
+            // Build properties dictionary for requested properties
+            var props = EntityMapper.MapClaims(entity.Claims);
+            if (requestedProps.Count > 0)
+            {
+                props = new Dictionary<string, IReadOnlyList<WikidataClaim>>(
+                    props.Where(kvp => requestedProps.Contains(kvp.Key)));
+            }
+
+            sortableResults.Add((new ChildEntityInfo
+            {
+                EntityId = id,
+                Label = string.IsNullOrEmpty(label) ? null : label,
+                Description = string.IsNullOrEmpty(description) ? null : description,
+                Ordinal = ordinal,
+                Properties = props
+            }, dateSort));
+        }
+
+        // Sort: P1545 ordinal ascending, then P577 date ascending, then label alphabetically
+        sortableResults.Sort((a, b) =>
+        {
+            // Both have ordinals: sort numerically
+            if (a.Info.Ordinal.HasValue && b.Info.Ordinal.HasValue)
+                return a.Info.Ordinal.Value.CompareTo(b.Info.Ordinal.Value);
+
+            // One has ordinal, other doesn't: ordinal first
+            if (a.Info.Ordinal.HasValue != b.Info.Ordinal.HasValue)
+                return a.Info.Ordinal.HasValue ? -1 : 1;
+
+            // Try P577 (publication date) comparison
+            if (a.DateSort is not null && b.DateSort is not null)
+                return string.Compare(a.DateSort, b.DateSort, StringComparison.Ordinal);
+            if (a.DateSort is not null || b.DateSort is not null)
+                return a.DateSort is not null ? -1 : 1;
+
+            // Final tiebreaker: label alphabetically
+            return string.Compare(a.Info.Label, b.Info.Label, StringComparison.OrdinalIgnoreCase);
+        });
+
+        return sortableResults.Select(r => r.Info).ToList();
     }
 
     // ─── Pen Name / Pseudonym Detection ─────────────────────────────

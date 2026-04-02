@@ -6,6 +6,15 @@ internal sealed class QuerySearchResponse
 {
     [JsonPropertyName("query")]
     public QuerySearchQuery? Query { get; set; }
+
+    [JsonPropertyName("continue")]
+    public QuerySearchContinue? Continue { get; set; }
+}
+
+internal sealed class QuerySearchContinue
+{
+    [JsonPropertyName("sroffset")]
+    public int? SrOffset { get; set; }
 }
 
 internal sealed class QuerySearchQuery

@@ -159,6 +159,49 @@ internal sealed class WikidataSearchClient
     }
 
     /// <summary>
+    /// Searches for all entities matching a haswbstatement filter with pagination.
+    /// Follows continue tokens to collect all results up to 500 per page.
+    /// Optionally filters by P31 type.
+    /// </summary>
+    public async Task<List<string>> SearchAllByStatementAsync(
+        string query, IReadOnlyList<string>? typeFilter = null,
+        CancellationToken cancellationToken = default)
+    {
+        var searchQuery = typeFilter is { Count: > 0 }
+            ? $"{query} ({string.Join(" OR ", typeFilter.Select(t => $"haswbstatement:P31={t}"))})"
+            : query;
+
+        var allResults = new List<string>();
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        int? sroffset = 0;
+
+        while (sroffset is not null)
+        {
+            var url = $"{_options.ApiEndpoint}?action=query&list=search&srnamespace=0" +
+                      $"&srlimit=500&srsearch={Uri.EscapeDataString(searchQuery)}&format=json";
+            if (sroffset > 0)
+                url += $"&sroffset={sroffset}";
+
+            var json = await _httpClient.GetStringAsync(url, cancellationToken).ConfigureAwait(false);
+            var response = JsonSerializer.Deserialize(json, WikidataJsonContext.Default.QuerySearchResponse);
+
+            if (response?.Query?.Search is { Count: > 0 } results)
+            {
+                foreach (var r in results)
+                {
+                    if (seen.Add(r.Title))
+                        allResults.Add(r.Title);
+                }
+            }
+
+            // Check for continuation
+            sroffset = response?.Continue?.SrOffset;
+        }
+
+        return allResults;
+    }
+
+    /// <summary>
     /// Searches for entities by an external ID property value using haswbstatement.
     /// </summary>
     public async Task<List<string>> SearchByExternalIdAsync(

@@ -53,6 +53,39 @@ internal static partial class HtmlTextExtractor
         return WebUtility.HtmlDecode(text).Trim();
     }
 
+    /// <summary>
+    /// Strips a leading section heading from plain text content.
+    /// Handles MediaWiki markup (== Title ==), plain-text headings matching a known title, and HTML headings.
+    /// </summary>
+    public static string StripLeadingHeading(string text)
+    {
+        // Strip MediaWiki-style heading: == Title ==, === Title ===, etc.
+        var stripped = LeadingWikiHeadingRegex().Replace(text, "");
+        if (stripped.Length < text.Length)
+            return stripped.TrimStart('\r', '\n');
+
+        // Strip HTML heading tags: <h2>Title</h2>, <h3>Title</h3>, etc.
+        stripped = LeadingHtmlHeadingRegex().Replace(text, "");
+        if (stripped.Length < text.Length)
+            return stripped.TrimStart('\r', '\n');
+
+        // Strip a plain-text first line followed by a blank line (likely a heading)
+        stripped = LeadingPlainHeadingRegex().Replace(text, "");
+        if (stripped.Length < text.Length)
+            return stripped.TrimStart('\r', '\n');
+
+        return text;
+    }
+
+    [GeneratedRegex(@"^\s*=+\s*[^=\n]+\s*=+\s*\n*", RegexOptions.Compiled)]
+    private static partial Regex LeadingWikiHeadingRegex();
+
+    [GeneratedRegex(@"^\s*<h[1-6][^>]*>.*?</h[1-6]>\s*\n*", RegexOptions.Singleline | RegexOptions.Compiled)]
+    private static partial Regex LeadingHtmlHeadingRegex();
+
+    [GeneratedRegex(@"^[^\n]{1,200}\n\n", RegexOptions.Compiled)]
+    private static partial Regex LeadingPlainHeadingRegex();
+
     [GeneratedRegex(@"<sup[^>]*>.*?</sup>", RegexOptions.Singleline | RegexOptions.Compiled)]
     private static partial Regex SupRegex();
 

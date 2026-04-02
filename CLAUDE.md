@@ -29,7 +29,7 @@ WikidataReconciler (public entry point)
 
 1. **Dual Search** — `wbsearchentities` (autocomplete) and `action=query&list=search` (full-text) run concurrently, results merged with full-text first. When types are specified, a CirrusSearch `haswbstatement:P31=QID` query also runs for better type recall. Multi-language search runs all languages concurrently and deduplicates. Diacritic-insensitive mode adds ASCII-normalized search variants.
 2. **Entity Fetching** — `wbgetentities` batched (max 50), fetches labels/descriptions/aliases/claims with language fallback. Optionally includes sitelinks for display-friendly label matching.
-3. **Scoring** — `score = (label_score * 1.0 + Σ(prop_score * 0.4)) / (1.0 + 0.4 * num_properties)`. Type penalty halves score if type requested but entity has no P31. Unique ID shortcut sets score to 100 on exact authority ID match. Diacritic-insensitive scoring strips accents before comparison.
+3. **Scoring** — `score = (label_score * 1.0 + Σ(prop_score * 0.4)) / (1.0 + 0.4 * num_properties)`. Type penalty halves score if type requested but entity has no P31. Unique ID shortcut sets score to 100 on exact authority ID match. Diacritic-insensitive scoring strips accents before comparison. Multi-value constraints average the best match score for each constraint value (e.g., 2 of 2 authors match = full score, 1 of 2 = half).
 4. **Type Filtering** — Direct P31 match (multi-type OR logic) or P279 subclass walk (configurable depth, per-request override). Sort by score desc, QID number asc as tiebreaker.
 
 ## Project Structure
@@ -43,7 +43,7 @@ src/
 │   ├── ReconciliationResult.cs              # Id, Name, Description, Score, Match, Types, Breakdown
 │   ├── ScoreBreakdown.cs                    # LabelScore, PropertyScores, TypeMatched, UniqueIdMatch
 │   ├── SuggestResult.cs                     # Id, Name, Description
-│   ├── PropertyConstraint.cs                # PropertyId, Value
+│   ├── PropertyConstraint.cs                # PropertyId, Value, Values (single or multi-value constraints)
 │   ├── WikidataEntityInfo.cs                # Id, Label, Description, Aliases, Claims, LastRevisionId, Modified
 │   ├── WikidataClaim.cs                     # PropertyId, Rank, Value, Qualifiers, QualifierOrder
 │   ├── WikidataValue.cs                     # Kind, RawValue, EntityId, EntityLabel, Time, Quantity, Coords + ToDisplayString()
@@ -51,8 +51,10 @@ src/
 │   ├── EntityChange.cs                      # EntityId, ChangeType, Timestamp, User, Comment, RevisionId
 │   ├── WikipediaSummary.cs                  # EntityId, Title, Extract, Description, ThumbnailUrl, ArticleUrl, Language
 │   ├── WikipediaSection.cs                  # Title, Index, Level, Number, Anchor (TOC entry)
+│   ├── ChildEntityInfo.cs                   # EntityId, Label, Description, Ordinal, Properties (generic child discovery)
 │   ├── EditionInfo.cs                       # EntityId, Label, Description, Types, Claims (P747 edition data)
 │   ├── PseudonymInfo.cs                     # AuthorEntityId, AuthorLabel, Pseudonyms (P742)
+│   ├── SectionContent.cs                    # Title, Content (structured section content for subsection handling)
 │   ├── QueryCleaners.cs                     # Built-in title pre-cleaning functions
 │   ├── CachingDelegatingHandler.cs          # Abstract HTTP caching base class
 │   └── Internal/
@@ -113,9 +115,11 @@ tests/
 | `GetPropertyLabelsAsync(propertyIds)` | P569 → "date of birth" |
 | `GetImageUrlsAsync(qids)` | Wikimedia Commons image URLs from P18 claims |
 | `GetWikipediaSectionsAsync(qids)` | Wikipedia article table of contents (section names, levels, indices) |
-| `GetWikipediaSectionContentAsync(qid, index)` | Specific Wikipedia section as plain text |
+| `GetWikipediaSectionContentAsync(qid, index)` | Specific Wikipedia section as plain text (heading stripped) |
+| `GetWikipediaSectionWithSubsectionsAsync(qid, index)` | Section + subsections as structured list of `SectionContent` |
 | `GetRevisionIdsAsync(qids)` | Lightweight staleness check — returns only revision IDs and timestamps |
 | `GetRecentChangesAsync(qids, since)` | Detailed entity change history for audit/monitoring |
+| `GetChildEntitiesAsync(parentQid, property, ...)` | Generic parent→child traversal with type filtering, ordering, reverse lookup |
 | `GetEditionsAsync(workQid, filterTypes?)` | Fetch editions/translations (P747) of a work entity |
 | `GetWorkForEditionAsync(editionQid)` | Find parent work (P629) from an edition |
 | `GetAuthorPseudonymsAsync(entityQid)` | Detect pseudonyms (P742) for authors (P50) |

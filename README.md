@@ -111,6 +111,26 @@ Property values can be:
 | URL | `"https://example.com"` | Scheme-normalized exact match |
 | Coordinates | `"51.5074,-0.1278"` | Distance-based (score decreases to 0 at 1 km) |
 
+### Multi-Value Property Constraints
+
+When an entity has multiple values for a property (e.g., a book with multiple authors), provide all expected values for proportional scoring:
+
+```csharp
+var results = await reconciler.ReconcileAsync(new ReconciliationRequest
+{
+    Query = "Good Omens",
+    Properties =
+    [
+        new PropertyConstraint
+        {
+            PropertyId = "P50",  // author
+            Values = ["Neil Gaiman", "Terry Pratchett"]
+        }
+    ]
+});
+// Candidates matching both authors score higher than those matching only one
+```
+
 ### Exclude Types
 
 Remove candidates of specific types from results:
@@ -366,14 +386,20 @@ foreach (var section in toc)
 // 2 [2] Characters
 // ...
 
-// Fetch a specific section's content as plain text
+// Fetch a specific section's content as plain text (heading auto-stripped)
 var plotIndex = toc.First(s => s.Title == "Plot summary").Index;
 var plot = await reconciler.GetWikipediaSectionContentAsync("Q208460", plotIndex);
 Console.WriteLine(plot);
 // "As the narrative opens on April 4th, 1984..."
+
+// Fetch a section with all its subsections as a structured list
+var content = await reconciler.GetWikipediaSectionWithSubsectionsAsync("Q83495", plotIndex);
+// content[0] = { Title: "Plot", Content: "The story follows..." }
+// content[1] = { Title: "Season 1", Content: "Walter White is a..." }
+// content[2] = { Title: "Season 2", Content: "..." }
 ```
 
-The library returns the table of contents with section names, levels, and indices — you decide which sections matter for your use case. Section content is returned as clean plain text with HTML tags, footnotes, and tables stripped.
+The library returns the table of contents with section names, levels, and indices — you decide which sections matter for your use case. Section content is returned as clean plain text with HTML tags, footnotes, headings, and tables stripped. `GetWikipediaSectionWithSubsectionsAsync` returns a structured list preserving the subsection titles and content separately.
 
 ### Entity Change Monitoring
 
@@ -498,6 +524,30 @@ var audiobooks = await reconciler.GetEditionsAsync("Q190192",
 // Find the parent work from an edition
 var work = await reconciler.GetWorkForEditionAsync("Q15228");
 ```
+
+### Child Entity Discovery
+
+Discover child entities linked to a parent via any relationship property — TV episodes, album tracks, book series installments, and more:
+
+```csharp
+// Get all seasons of a TV series (forward traversal via P527 "has parts")
+var seasons = await reconciler.GetChildEntitiesAsync(
+    parentQid: "Q1079",                        // Breaking Bad
+    relationshipProperty: "P527",               // has parts
+    childTypeFilter: ["Q3464665"],              // TV season
+    childProperties: ["P1476", "P1545"]);       // title, ordinal
+// Returns seasons ordered by ordinal: Season 1, Season 2, ...
+
+// Find all books in a series (reverse traversal — books point to the series)
+var books = await reconciler.GetChildEntitiesAsync(
+    parentQid: "Q8337",                         // Harry Potter series
+    relationshipProperty: "^P179",              // reverse: "part of the series"
+    childTypeFilter: ["Q7725634"],              // literary work
+    childProperties: ["P1476", "P1545", "P577", "P50"]);
+// title, ordinal, publication date, author
+```
+
+Results are ordered by P1545 (series ordinal) if available, then P577 (date), then label alphabetically. Use `^` prefix for reverse traversal where children point to the parent.
 
 ### Wikipedia Summary Language Fallback
 
@@ -802,6 +852,13 @@ The `ScoreBreakdown` contains:
 Results are sorted by score descending, with QID number as a tiebreaker (lower QID = older, more established entity).
 
 ## What's New by Version
+
+### v0.10.0
+
+- **Section heading stripping** — `GetWikipediaSectionContentAsync` now automatically strips the section's own heading from the returned content. No more manual cleanup of `"== Plot ==\n\n..."` prefixes.
+- **Subsection content** — new `GetWikipediaSectionWithSubsectionsAsync` fetches a section and all its nested subsections as a structured list of `SectionContent` objects, each with a `Title` and `Content`. Preserves document structure while stripping all heading markup.
+- **Multi-value property constraints** — `PropertyConstraint` now supports a `Values` property for matching against entities with multiple values (e.g., multiple authors). The property score is the average of the best match for each constraint value, so candidates matching all provided values rank highest.
+- **Child entity discovery** — new `GetChildEntitiesAsync` traverses parent-child relationships generically. Works with any relationship property (P527 "has parts", P179 "part of the series", etc.), supports forward and reverse (`^P179`) traversal, optional P31 type filtering, and automatic ordering by P1545 ordinal or P577 date. Paginated CirrusSearch for reverse lookups handles large result sets.
 
 ### v0.9.0
 
