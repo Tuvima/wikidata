@@ -275,6 +275,59 @@ public class IntegrationTests : IDisposable
         Assert.StartsWith("Q", firstValue.EntityId);
     }
 
+    [Fact]
+    public async Task GetPropertiesAsync_ShouldResolveEntityLabels()
+    {
+        // Q190159 = Dune (novel), P50 = author → Q44413 (Frank Herbert)
+        var props = await _reconciler.GetPropertiesAsync(["Q190159"], ["P50"]);
+
+        Assert.True(props.ContainsKey("Q190159"));
+        var entityProps = props["Q190159"];
+        Assert.True(entityProps.ContainsKey("P50"));
+        var authorClaim = entityProps["P50"][0];
+        Assert.NotNull(authorClaim.Value);
+        Assert.Equal(WikidataValueKind.EntityId, authorClaim.Value.Kind);
+        Assert.Equal("Q44413", authorClaim.Value.EntityId);
+        Assert.NotNull(authorClaim.Value.EntityLabel);
+        Assert.NotEqual("Q44413", authorClaim.Value.EntityLabel);
+        Assert.Equal("Frank Herbert", authorClaim.Value.EntityLabel);
+    }
+
+    [Fact]
+    public async Task GetPropertiesAsync_MultiValuedEntityProperty_ShouldResolveAllLabels()
+    {
+        // Q42 = Douglas Adams, P106 = occupation (multi-valued entity property)
+        var props = await _reconciler.GetPropertiesAsync(["Q42"], ["P106"]);
+
+        Assert.True(props.ContainsKey("Q42"));
+        var entityProps = props["Q42"];
+        Assert.True(entityProps.ContainsKey("P106"));
+        var occupationClaims = entityProps["P106"];
+        Assert.True(occupationClaims.Count > 1, "Expected multiple occupation values");
+
+        foreach (var claim in occupationClaims)
+        {
+            Assert.NotNull(claim.Value);
+            Assert.Equal(WikidataValueKind.EntityId, claim.Value.Kind);
+            Assert.NotNull(claim.Value.EntityLabel);
+            Assert.DoesNotMatch(@"^Q\d+$", claim.Value.EntityLabel);
+        }
+    }
+
+    [Fact]
+    public async Task GetPropertiesAsync_ShouldRespectLanguageParameter()
+    {
+        // Q190159 = Dune (novel), P50 = author → Q44413 (Frank Herbert)
+        // German label for Frank Herbert should still be "Frank Herbert" (proper name)
+        // but this verifies the language parameter is passed through
+        var props = await _reconciler.GetPropertiesAsync(["Q190159"], ["P50"], language: "de");
+
+        Assert.True(props.ContainsKey("Q190159"));
+        var authorClaim = props["Q190159"]["P50"][0];
+        Assert.NotNull(authorClaim.Value?.EntityLabel);
+        Assert.DoesNotMatch(@"^Q\d+$", authorClaim.Value!.EntityLabel);
+    }
+
     // ─── Wikipedia URL Resolution ───────────────────────────────────
 
     [Fact]

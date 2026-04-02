@@ -227,10 +227,10 @@ var props = await reconciler.GetPropertiesAsync(["Q42", "Q30"], ["P27", "P569"])
 var citizenship = props["Q42"]["P27"][0].Value?.EntityId; // "Q145" (UK)
 ```
 
-With entity label resolution, property values that reference other entities get human-readable labels:
+Entity-valued properties automatically include human-readable labels:
 
 ```csharp
-var props = await reconciler.GetPropertiesAsync(["Q42"], ["P27"], resolveEntityLabels: true);
+var props = await reconciler.GetPropertiesAsync(["Q42"], ["P27"]);
 var country = props["Q42"]["P27"][0].Value;
 // country.EntityId    → "Q145"
 // country.EntityLabel → "United Kingdom"
@@ -802,6 +802,10 @@ The `ScoreBreakdown` contains:
 Results are sorted by score descending, with QID number as a tiebreaker (lower QID = older, more established entity).
 
 ## What's New by Version
+
+### v0.8.0
+
+- **Automatic entity label resolution in GetPropertiesAsync** — `GetPropertiesAsync` now automatically resolves `EntityLabel` for all entity-reference property values (e.g., P50 author → "Frank Herbert" instead of raw QID "Q44413"). Labels are batch-fetched and respect the `language` parameter with fallback. Eliminates the need for consumers to make a separate `GetEntitiesAsync` call to resolve labels. Breaking change: the `resolveEntityLabels` parameter from v0.7.0 has been removed since resolution is now always enabled.
 
 ### v0.7.0
 

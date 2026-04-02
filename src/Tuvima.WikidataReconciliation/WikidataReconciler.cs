@@ -467,23 +467,11 @@ public sealed class WikidataReconciler : IDisposable
     /// <summary>
     /// Fetches specific properties for the given QIDs.
     /// Returns only the requested property claims for each entity.
-    /// </summary>
-    public Task<IReadOnlyDictionary<string, IReadOnlyDictionary<string, IReadOnlyList<WikidataClaim>>>> GetPropertiesAsync(
-        IReadOnlyList<string> qids, IReadOnlyList<string> propertyIds,
-        string? language = null, CancellationToken cancellationToken = default)
-    {
-        return GetPropertiesAsync(qids, propertyIds, resolveEntityLabels: false, language, cancellationToken);
-    }
-
-    /// <summary>
-    /// Fetches specific properties for the given QIDs.
-    /// Returns only the requested property claims for each entity.
-    /// When <paramref name="resolveEntityLabels"/> is true, entity-valued claims
-    /// will have their <see cref="WikidataValue.EntityLabel"/> populated with the
-    /// referenced entity's label in the requested language.
+    /// Entity-valued claims automatically have their <see cref="WikidataValue.EntityLabel"/>
+    /// populated with the referenced entity's label in the requested language.
     /// </summary>
     public async Task<IReadOnlyDictionary<string, IReadOnlyDictionary<string, IReadOnlyList<WikidataClaim>>>> GetPropertiesAsync(
-        IReadOnlyList<string> qids, IReadOnlyList<string> propertyIds, bool resolveEntityLabels,
+        IReadOnlyList<string> qids, IReadOnlyList<string> propertyIds,
         string? language = null, CancellationToken cancellationToken = default)
     {
         var lang = language ?? _options.Language;
@@ -507,8 +495,7 @@ public sealed class WikidataReconciler : IDisposable
             result[id] = filtered;
         }
 
-        if (resolveEntityLabels)
-            await ResolveClaimsEntityLabelsAsync(result, lang, cancellationToken).ConfigureAwait(false);
+        await ResolveClaimsEntityLabelsAsync(result, lang, cancellationToken).ConfigureAwait(false);
 
         return result;
     }
