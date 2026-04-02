@@ -227,6 +227,15 @@ var props = await reconciler.GetPropertiesAsync(["Q42", "Q30"], ["P27", "P569"])
 var citizenship = props["Q42"]["P27"][0].Value?.EntityId; // "Q145" (UK)
 ```
 
+With entity label resolution, property values that reference other entities get human-readable labels:
+
+```csharp
+var props = await reconciler.GetPropertiesAsync(["Q42"], ["P27"], resolveEntityLabels: true);
+var country = props["Q42"]["P27"][0].Value;
+// country.EntityId    → "Q145"
+// country.EntityLabel → "United Kingdom"
+```
+
 ### Wikipedia URLs
 
 Resolve entities to validated Wikipedia article links:
@@ -793,6 +802,10 @@ The `ScoreBreakdown` contains:
 Results are sorted by score descending, with QID number as a tiebreaker (lower QID = older, more established entity).
 
 ## What's New by Version
+
+### v0.7.0
+
+- **Entity label resolution for GetPropertiesAsync** — new `resolveEntityLabels` parameter on `GetPropertiesAsync` auto-resolves entity-valued claims to human-readable labels, matching the existing behavior on `GetEntitiesAsync`. Previously, entity references (e.g., P179 series → Q5765655) returned only raw QIDs with null `EntityLabel`.
 
 ### v0.6.0
 

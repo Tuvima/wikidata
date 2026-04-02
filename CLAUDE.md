@@ -106,6 +106,7 @@ tests/
 | `GetEntitiesAsync(qids)` | Full entity data with claims and qualifiers |
 | `GetEntitiesAsync(qids, resolveEntityLabels)` | Full entity data with auto-resolved entity reference labels |
 | `GetPropertiesAsync(qids, propertyIds)` | Specific properties only |
+| `GetPropertiesAsync(qids, propertyIds, resolveEntityLabels)` | Specific properties with auto-resolved entity labels |
 | `GetWikipediaUrlsAsync(qids)` | QID → Wikipedia article URL via sitelinks |
 | `GetWikipediaSummariesAsync(qids)` | Wikipedia article summaries (extract, thumbnail, URL) |
 | `GetWikipediaSummariesAsync(qids, lang, fallbacks)` | Wikipedia summaries with language fallback |

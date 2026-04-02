@@ -468,8 +468,22 @@ public sealed class WikidataReconciler : IDisposable
     /// Fetches specific properties for the given QIDs.
     /// Returns only the requested property claims for each entity.
     /// </summary>
-    public async Task<IReadOnlyDictionary<string, IReadOnlyDictionary<string, IReadOnlyList<WikidataClaim>>>> GetPropertiesAsync(
+    public Task<IReadOnlyDictionary<string, IReadOnlyDictionary<string, IReadOnlyList<WikidataClaim>>>> GetPropertiesAsync(
         IReadOnlyList<string> qids, IReadOnlyList<string> propertyIds,
+        string? language = null, CancellationToken cancellationToken = default)
+    {
+        return GetPropertiesAsync(qids, propertyIds, resolveEntityLabels: false, language, cancellationToken);
+    }
+
+    /// <summary>
+    /// Fetches specific properties for the given QIDs.
+    /// Returns only the requested property claims for each entity.
+    /// When <paramref name="resolveEntityLabels"/> is true, entity-valued claims
+    /// will have their <see cref="WikidataValue.EntityLabel"/> populated with the
+    /// referenced entity's label in the requested language.
+    /// </summary>
+    public async Task<IReadOnlyDictionary<string, IReadOnlyDictionary<string, IReadOnlyList<WikidataClaim>>>> GetPropertiesAsync(
+        IReadOnlyList<string> qids, IReadOnlyList<string> propertyIds, bool resolveEntityLabels,
         string? language = null, CancellationToken cancellationToken = default)
     {
         var lang = language ?? _options.Language;
@@ -493,7 +507,83 @@ public sealed class WikidataReconciler : IDisposable
             result[id] = filtered;
         }
 
+        if (resolveEntityLabels)
+            await ResolveClaimsEntityLabelsAsync(result, lang, cancellationToken).ConfigureAwait(false);
+
         return result;
+    }
+
+    private async Task ResolveClaimsEntityLabelsAsync(
+        Dictionary<string, IReadOnlyDictionary<string, IReadOnlyList<WikidataClaim>>> propertyResult,
+        string language, CancellationToken cancellationToken)
+    {
+        // Collect all unique entity IDs referenced in claims and qualifiers
+        var referencedIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var propDict in propertyResult.Values)
+        {
+            foreach (var claims in propDict.Values)
+            {
+                foreach (var claim in claims)
+                {
+                    if (claim.Value?.Kind == WikidataValueKind.EntityId && !string.IsNullOrEmpty(claim.Value.EntityId))
+                        referencedIds.Add(claim.Value.EntityId);
+
+                    foreach (var qualValues in claim.Qualifiers.Values)
+                    {
+                        foreach (var qv in qualValues)
+                        {
+                            if (qv.Kind == WikidataValueKind.EntityId && !string.IsNullOrEmpty(qv.EntityId))
+                                referencedIds.Add(qv.EntityId);
+                        }
+                    }
+                }
+            }
+        }
+
+        if (referencedIds.Count == 0)
+            return;
+
+        // Batch-fetch labels for all referenced entities
+        var labelLookup = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        var labelEntities = await _entityFetcher.FetchLabelsOnlyAsync(
+            referencedIds.ToList(), language, cancellationToken).ConfigureAwait(false);
+
+        foreach (var (id, entity) in labelEntities)
+        {
+            if (LanguageFallback.TryGetValue(entity.Labels, language, out var label))
+                labelLookup[id] = label;
+        }
+
+        // Walk all claims and set EntityLabel
+        foreach (var propDict in propertyResult.Values)
+        {
+            foreach (var claims in propDict.Values)
+            {
+                foreach (var claim in claims)
+                {
+                    if (claim.Value?.Kind == WikidataValueKind.EntityId &&
+                        !string.IsNullOrEmpty(claim.Value.EntityId) &&
+                        labelLookup.TryGetValue(claim.Value.EntityId, out var claimLabel))
+                    {
+                        claim.Value.EntityLabel = claimLabel;
+                    }
+
+                    foreach (var qualValues in claim.Qualifiers.Values)
+                    {
+                        foreach (var qv in qualValues)
+                        {
+                            if (qv.Kind == WikidataValueKind.EntityId &&
+                                !string.IsNullOrEmpty(qv.EntityId) &&
+                                labelLookup.TryGetValue(qv.EntityId, out var qLabel))
+                            {
+                                qv.EntityLabel = qLabel;
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 
     // ─── Wikipedia URL Resolution ───────────────────────────────────
