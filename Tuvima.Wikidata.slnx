@@ -1,0 +1,9 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/Tuvima.Wikidata/Tuvima.Wikidata.csproj" />
+    <Project Path="src/Tuvima.Wikidata.AspNetCore/Tuvima.Wikidata.AspNetCore.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/Tuvima.Wikidata.Tests/Tuvima.Wikidata.Tests.csproj" />
+  </Folder>
+</Solution>

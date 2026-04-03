@@ -1,6 +1,8 @@
-Tuvima.WikidataReconciliation
+Tuvima.Wikidata
 Copyright (c) 2026 Tuvima
 
+Reconciliation Algorithms
+-------------------------
 This library's reconciliation algorithms (dual-search strategy, scoring formula,
 fuzzy matching approach, type checking, and property matching) are based on
 openrefine-wikibase by Antonin Delpeuch, licensed under the MIT License.
@@ -15,3 +17,15 @@ The nfdi4culture fork informed the configurable Wikibase endpoint support:
 This is an independent C# implementation — no code was copied from the original
 Python project. The algorithms were re-implemented from the documented behavior
 and public API specifications.
+
+Graph Module
+------------
+The Tuvima.Wikidata.Graph module provides lightweight in-memory entity graph
+traversal (pathfinding, family trees, cross-media entity detection). These use
+cases were originally implemented using dotNetRDF (MIT License) in the consuming
+application. This module is an independent, dependency-free reimplementation of
+those specific operations using adjacency lists and BFS — it does not use RDF,
+SPARQL, or any code from dotNetRDF.
+
+  dotNetRDF: https://github.com/dotnetrdf/dotnetrdf
+  License: MIT
