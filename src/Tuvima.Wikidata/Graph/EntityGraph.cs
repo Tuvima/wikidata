@@ -98,8 +98,12 @@ public sealed class EntityGraph
                 break;
 
             var current = path[^1];
+            var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             foreach (var (target, _) in GetAllNeighborQids(current))
             {
+                if (!seen.Add(target))
+                    continue;
+
                 if (path.Contains(target, StringComparer.OrdinalIgnoreCase))
                     continue;
 
