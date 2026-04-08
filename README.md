@@ -115,6 +115,30 @@ The reconciliation pipeline has four stages: dual search, entity fetching, weigh
 
 [Architecture overview](docs/architecture.md) — pipeline stages, internal components, design decisions
 
+## What's New in v2.4.0
+
+Additive release. Closes out pseudonym resolution across all three Wikidata modeling patterns:
+
+- **Solo pen name reverse lookup (Pattern 1)** — looking up "Richard Bachman" now resolves to Stephen King (Q39829) via `haswbstatement:P742`. Both `ResolvedAuthor.Qid` and `ResolvedAuthor.RealNameQid` are populated with the real author's QID.
+- **Collective pseudonym expansion (Pattern 3)** — looking up "James S.A. Corey" resolves to the collective pseudonym entity (Q6142591) and populates the new `ResolvedAuthor.RealAuthors` list with Daniel Abraham and Ty Franck. The library walks P527 (has part) on any entity whose P31 includes a pseudonym class (Q16017119, Q4647632, etc.), with Q5 type checking on the parts to filter out non-person members.
+- **Pen-name enumeration (Pattern 2)** stayed the same — looking up "Stephen King" still returns his P742 values in `ResolvedAuthor.Pseudonyms` (shipped in v2.3).
+
+```csharp
+// Pattern 3: collective pseudonym
+var result = await reconciler.Authors.ResolveAsync(new AuthorResolutionRequest
+{
+    RawAuthorString = "James S.A. Corey",
+    DetectPseudonyms = true
+});
+
+var author = result.Authors[0];
+Console.WriteLine($"Pseudonym entity: {author.Qid}");
+foreach (var real in author.RealAuthors!)
+    Console.WriteLine($"  real author: {real.CanonicalName} ({real.Qid})");
+```
+
+New DTO: `RealAuthor` (lightweight `Qid` + `CanonicalName` ref). Unit tests expanded to 92, integration tests to 37.
+
 ## What's New in v2.3.0
 
 Additive release closing out the library behavior gaps identified during v2.0–v2.2 integration testing.

@@ -21,11 +21,32 @@ public sealed class ResolvedAuthor
     public string? CanonicalName { get; init; }
 
     /// <summary>
-    /// When the resolved author is a known pseudonym (P742 is set on the owning real author,
-    /// or the resolved entity is the pseudonym literal), this is the QID of the real author.
-    /// Null when the resolved entity is not a pseudonym or when pseudonym detection is disabled.
+    /// For solo pen names resolved via reverse P742 lookup (Pattern 1): the QID of the real
+    /// author. Populated when the input string was a pen name like "Richard Bachman" and
+    /// <see cref="Services.AuthorsService.ResolveAsync"/> found a Wikidata entity whose P742
+    /// claim matches the input. In that case <see cref="Qid"/> is also set to this QID —
+    /// there is no separate entity for the pen name itself. Null for non-pseudonym lookups,
+    /// for collective pseudonyms (use <see cref="RealAuthors"/> instead), and when pseudonym
+    /// detection is disabled.
     /// </summary>
     public string? RealNameQid { get; init; }
+
+    /// <summary>
+    /// For collective pseudonyms (Pattern 3): the real authors the pseudonym represents.
+    /// Populated when the resolved entity has a P31 instance-of one of the pseudonym classes
+    /// (collective pseudonym Q16017119, pen name Q4647632, etc.) and Wikidata lists the real
+    /// authors via P50 (author), P170 (creator), or related properties. Example: looking up
+    /// "James S.A. Corey" resolves to the collective pseudonym entity and populates this with
+    /// Daniel Abraham and Ty Franck. Null for solo authors, unresolved inputs, and when
+    /// pseudonym detection is disabled.
+    /// </summary>
+    /// <remarks>
+    /// Entries in this list are lightweight <see cref="RealAuthor"/> refs rather than full
+    /// <see cref="ResolvedAuthor"/> objects — the library does not recursively expand nested
+    /// pseudonyms. If a real author discovered through collective-pseudonym expansion is itself
+    /// a pseudonym (rare), that inner layer is not resolved.
+    /// </remarks>
+    public IReadOnlyList<RealAuthor>? RealAuthors { get; init; }
 
     /// <summary>
     /// The resolved entity's own P742 (pseudonym) claims as raw strings, when the author
@@ -33,10 +54,11 @@ public sealed class ResolvedAuthor
     /// when <see cref="AuthorResolutionRequest.DetectPseudonyms"/> is true. Null otherwise.
     /// </summary>
     /// <remarks>
-    /// Wikidata typically models pseudonyms as P742 string values on the real author's entity
-    /// rather than as separate entities. If Stephen King (Q39829) has P742 = "Richard Bachman",
-    /// looking up either "Stephen King" or "Richard Bachman" will resolve to Q39829 and populate
-    /// this list with "Richard Bachman".
+    /// Wikidata typically models solo pen names as P742 string values on the real author's
+    /// entity rather than as separate entities. If Stephen King (Q39829) has P742 = "Richard
+    /// Bachman", looking up "Stephen King" will resolve to Q39829 and populate this list with
+    /// "Richard Bachman". This is distinct from <see cref="RealAuthors"/>, which handles the
+    /// collective-pseudonym case where the pseudonym has its own entity.
     /// </remarks>
     public IReadOnlyList<string>? Pseudonyms { get; init; }
 

@@ -1,5 +1,50 @@
 # Changelog
 
+## v2.4.0
+
+Additive release. Completes the pseudonym-resolution story by handling collective pseudonyms
+(James S.A. Corey → Daniel Abraham + Ty Franck) and solo pen names reversed through P742
+(Richard Bachman → Stephen King) in addition to the v2.3 pen-name enumeration case.
+
+### New — pseudonym resolution Patterns 1 and 3
+
+`AuthorsService.ResolveAsync` now handles three distinct Wikidata pseudonym modeling patterns:
+
+| Pattern | Example | Field populated |
+|---|---|---|
+| **1** — solo pen name (no standalone entity) | "Richard Bachman" | `ResolvedAuthor.RealNameQid = Q39829` (Stephen King), `Qid` set to the same value |
+| **2** — pen name listed as P742 on real author | "Stephen King" | `ResolvedAuthor.Pseudonyms = ["Richard Bachman"]` (v2.3) |
+| **3** — collective pseudonym with dedicated entity | "James S.A. Corey" | `ResolvedAuthor.RealAuthors = [Daniel Abraham, Ty Franck]` |
+
+**Pattern 1 (reverse P742 lookup):** when the initial reconciliation scores below a high-confidence threshold (80), the service runs `haswbstatement:P742="<name>"` against Wikidata's CirrusSearch index. If that reverse lookup finds an entity whose P742 claim contains the input string, the library treats the found entity as the real author and populates both `Qid` and `RealNameQid` with its QID (there is no separate entity for the pen name itself). Confidence is reported as 100 because the P742 claim is an authoritative Wikidata assertion rather than a fuzzy label match. Verified against Wikidata in integration tests.
+
+**Pattern 3 (collective pseudonym expansion):** when the resolved entity's P31 includes one of the pseudonym classes (`Q16017119` collective pseudonym, `Q4647632` pen name, `Q108946349`, `Q2500638`), the service walks P527 (has part) — the property Wikidata actually uses to link collective pseudonyms to their constituent real authors — with P50 (author) and P170 (creator) as defensive fallbacks. Each discovered part is then type-checked for `Q5` (human) to filter out non-person parts that might slip through P527's general-purpose semantics. Verified with James S.A. Corey → Daniel Abraham in live integration tests.
+
+Both patterns fire automatically when `AuthorResolutionRequest.DetectPseudonyms = true` (the default). Setting it to false returns a plain resolution with all pseudonym fields left null.
+
+### New API — `RealAuthor` + `ResolvedAuthor.RealAuthors`
+
+- **`RealAuthor`** (new lightweight DTO) — `Qid` and `CanonicalName`. Used as the element type of the collective-pseudonym expansion list.
+- **`ResolvedAuthor.RealAuthors`** (`IReadOnlyList<RealAuthor>?`) — populated when Pattern 3 fires. Null for solo authors, unresolved inputs, and when `DetectPseudonyms = false`.
+
+The existing `ResolvedAuthor.RealNameQid` field is now meaningfully populated (previously always null) when Pattern 1 fires.
+
+### Behavior change — AuthorsService initial reconcile type filter
+
+`AuthorsService.ResolveAsync` previously filtered initial reconciliation to `[Q5]` + the known pseudonym classes. This excluded real matches whose P31 didn't align with the whitelist — for example, James S.A. Corey (Q6142591) has `P31 = [Q10648343, Q16017119, Q127843]`, of which only Q16017119 was in the whitelist, but the label-match search wasn't finding the entity at all when the filter was applied. The type filter has been removed from the initial reconcile; the library now trusts the label match and post-checks P31 during pseudonym enrichment. Risk of false positives ("James" matching unrelated entities) is bounded by the reconciler's top-N limit and the existing accept-threshold logic.
+
+### Test coverage
+
+- **92 unit tests** (up from 88) — added `ResolvedAuthorShapeTests` covering the new DTO shape and Pattern 1 / Pattern 3 field independence.
+- **37 new-primitive integration tests** (up from 34) — `AuthorsIntegrationTests` added three live Wikidata tests:
+  - Stephen King solo author → `RealAuthors` stays null, `Pseudonyms` populated.
+  - James S.A. Corey collective pseudonym → `RealAuthors` contains Daniel Abraham.
+  - Richard Bachman reverse P742 lookup → `RealNameQid` resolves to Stephen King's QID.
+
+### Deferred
+
+Nothing material. The pseudonym story is now structurally complete across all three modeling patterns Wikidata uses. Future refinements (e.g., handling pseudonym chains where a pen name's P742 points to another pen name) can be built on top of this foundation if a real case appears.
+
 ## v2.3.0
 
 Additive release — no breaking changes. Closes out the library behavior and test gaps
