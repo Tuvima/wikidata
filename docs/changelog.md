@@ -1,5 +1,12 @@
 # Changelog
 
+## v2.4.1
+
+Patch release — performance fixes for `AuthorsService`. No API changes.
+
+- **Eliminated double-fetch on Pattern 1 reverse P742 lookup.** When `TryReverseP742LookupAsync` resolved a pen name to its real author, it fetched the real author's entity twice — once to read the label and once again inside `GetPseudonymEnrichmentAsync`. The enrichment helper now accepts an optional pre-fetched entity parameter and skips the duplicate `wbgetentities` call. Saves one API round-trip per Richard-Bachman-style reverse resolution.
+- **Parallelized multi-author resolution.** `AuthorsService.ResolveAsync` previously processed each name in a multi-author input ("Alice & Bob & Carol & Dave") strictly sequentially — N reconciliation pipelines back-to-back. The loop now fans out via `Task.WhenAll`, gated by the existing `ConcurrencyLimiter` so the parallel name resolutions stay bounded by `WikidataReconcilerOptions.MaxConcurrency` (default 5). For a 4-author input this gives roughly 4× speedup; for single-author inputs (the common case) the cost is one extra `Task.WhenAll` allocation. Result order is preserved.
+
 ## v2.4.0
 
 Additive release. Completes the pseudonym-resolution story by handling collective pseudonyms

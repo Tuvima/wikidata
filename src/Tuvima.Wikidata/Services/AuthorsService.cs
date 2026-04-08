@@ -75,25 +75,54 @@ public sealed class AuthorsService
             };
         }
 
-        var resolvedList = new List<ResolvedAuthor>(names.Count);
-        var additionalUnresolved = new List<string>(unresolved);
-
-        foreach (var name in names)
+        // Resolve names in parallel, gated by the global concurrency limiter so a multi-author
+        // input doesn't fan out beyond the configured MaxConcurrency. Task.WhenAll preserves
+        // input order in the result array, so the Authors list still reflects the order names
+        // appeared in the raw string.
+        var resolveTasks = new Task<ResolvedAuthor>[names.Count];
+        for (var i = 0; i < names.Count; i++)
         {
-            var resolved = await ResolveSingleNameAsync(name, request.DetectPseudonyms, lang, cancellationToken)
-                .ConfigureAwait(false);
+            resolveTasks[i] = ResolveNameWithLimiterAsync(
+                names[i], request.DetectPseudonyms, lang, cancellationToken);
+        }
 
-            resolvedList.Add(resolved);
+        var resolved = await Task.WhenAll(resolveTasks).ConfigureAwait(false);
 
-            if (resolved.Qid is null)
-                additionalUnresolved.Add(name);
+        var additionalUnresolved = new List<string>(unresolved);
+        foreach (var r in resolved)
+        {
+            if (r.Qid is null)
+                additionalUnresolved.Add(r.OriginalName);
         }
 
         return new AuthorResolutionResult
         {
-            Authors = resolvedList,
+            Authors = resolved,
             UnresolvedNames = additionalUnresolved
         };
+    }
+
+    /// <summary>
+    /// Wraps a single-name resolution in the shared concurrency limiter so multi-author
+    /// inputs don't exceed the reconciler's <see cref="WikidataReconcilerOptions.MaxConcurrency"/>
+    /// when fanning out via <see cref="Task.WhenAll(IEnumerable{Task})"/>.
+    /// </summary>
+    private async Task<ResolvedAuthor> ResolveNameWithLimiterAsync(
+        string name,
+        bool detectPseudonyms,
+        string language,
+        CancellationToken cancellationToken)
+    {
+        await _ctx.ConcurrencyLimiter.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            return await ResolveSingleNameAsync(name, detectPseudonyms, language, cancellationToken)
+                .ConfigureAwait(false);
+        }
+        finally
+        {
+            _ctx.ConcurrencyLimiter.Release();
+        }
     }
 
     /// <summary>
@@ -172,21 +201,34 @@ public sealed class AuthorsService
     /// Looks up the resolved entity's own claims and returns Pattern 2 (pseudonym strings) +
     /// Pattern 3 (collective pseudonym real-author expansion) data. The caller composes this
     /// enrichment with the base reconcile match info to build a full <see cref="ResolvedAuthor"/>.
+    /// <para>
+    /// When the entity has already been fetched (e.g., during reverse P742 lookup), pass it
+    /// via <paramref name="prefetchedEntity"/> to skip the duplicate <c>wbgetentities</c> call.
+    /// </para>
     /// </summary>
     private async Task<(IReadOnlyList<string>? Pseudonyms, IReadOnlyList<RealAuthor>? RealAuthors)>
-        GetPseudonymEnrichmentAsync(string qid, string language, CancellationToken cancellationToken)
+        GetPseudonymEnrichmentAsync(
+            string qid,
+            string language,
+            CancellationToken cancellationToken,
+            Internal.Json.WikidataEntity? prefetchedEntity = null)
     {
-        var entities = await _ctx.EntityFetcher.FetchEntitiesAsync([qid], language, cancellationToken)
-            .ConfigureAwait(false);
+        Internal.Json.WikidataEntity? entity = prefetchedEntity;
 
-        if (!entities.TryGetValue(qid, out var entity))
-            return (null, null);
+        if (entity is null)
+        {
+            var entities = await _ctx.EntityFetcher.FetchEntitiesAsync([qid], language, cancellationToken)
+                .ConfigureAwait(false);
+
+            if (!entities.TryGetValue(qid, out entity))
+                return (null, null);
+        }
 
         // Pattern 2: P742 strings on the resolved entity are the pen names it uses.
         var pseudonyms = ReadP742Strings(entity);
 
-        // Pattern 3: if the resolved entity is a collective pseudonym, walk P50/P170 to find
-        // the real authors and resolve their display labels in one batch.
+        // Pattern 3: if the resolved entity is a collective pseudonym, walk P527 / P50 / P170
+        // to find the real authors and resolve their display labels in one batch.
         IReadOnlyList<RealAuthor>? realAuthors = null;
         var entityTypes = WikidataEntityFetcher.GetTypeIds(entity, _ctx.Options.TypePropertyId);
 
@@ -306,7 +348,9 @@ public sealed class AuthorsService
 
         // Run the same enrichment on the real author so we still populate Pseudonyms /
         // RealAuthors consistently even when the resolution went through the reverse path.
-        var enrichment = await GetPseudonymEnrichmentAsync(realAuthorQid, language, cancellationToken)
+        // Pass the already-fetched entity so we don't pay for a second wbgetentities call.
+        var enrichment = await GetPseudonymEnrichmentAsync(
+                realAuthorQid, language, cancellationToken, prefetchedEntity: realEntity)
             .ConfigureAwait(false);
 
         return new ResolvedAuthor
