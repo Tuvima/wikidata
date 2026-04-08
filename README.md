@@ -115,6 +115,30 @@ The reconciliation pipeline has four stages: dual search, entity fetching, weigh
 
 [Architecture overview](docs/architecture.md) — pipeline stages, internal components, design decisions
 
+## What's New in v2.2.0
+
+Additive release — no breaking changes. Completes the original plan's primitive expansion.
+
+- **`reconciler.Stage2.ResolveBatchAsync(...)`** — unified Stage 2 resolver for bridge IDs, music albums, and type-filtered text reconciliation. Uses a discriminated marker-interface hierarchy (`BridgeStage2Request`, `MusicStage2Request`, `TextStage2Request`) so the strategy is chosen at compile time, not guessed at runtime. Groups identical requests by natural key across a batch. Supports edition ↔ work pivoting via `EditionPivotRule` with fuzzy-match ranking hints.
+
+```csharp
+var bridge = Stage2Request.Bridge(
+    correlationKey: "book-42",
+    bridgeIds: new Dictionary<string, string> { ["isbn13"] = "9780441172719" },
+    wikidataProperties: new Dictionary<string, string> { ["isbn13"] = "P212" },
+    editionPivot: new EditionPivotRule
+    {
+        WorkClasses = ["Q7725634"],
+        EditionClasses = ["Q3331189", "Q122731938"]
+    });
+
+var text = Stage2Request.Text("tv-12", "Breaking Bad", ["Q5398426"]);
+
+var results = await reconciler.Stage2.ResolveBatchAsync([bridge, text]);
+```
+
+The plan's original v1.1.0 primitive expansion is now fully landed across v2.0, v2.1, and v2.2.
+
 ## What's New in v2.1.0
 
 Additive release — no breaking changes.

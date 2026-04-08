@@ -1,5 +1,67 @@
 # Changelog
 
+## v2.2.0
+
+Additive release — no breaking changes on top of v2.1.0.
+
+### New — `reconciler.Stage2` sub-service
+
+A unified Stage 2 resolver that replaces the hand-rolled compose-your-own pattern of
+`LookupByExternalIdAsync` + `ReconcileAsync(Types: [...])` + `GetEditionsAsync` every
+consumer was re-implementing.
+
+```csharp
+// Bridge ID lookup with edition pivoting (e.g. audiobook → work)
+var bridge = Stage2Request.Bridge(
+    correlationKey: "book-42",
+    bridgeIds: new Dictionary<string, string>
+    {
+        ["isbn13"] = "9780441172719",
+        ["openlibrary"] = "OL24229316M"
+    },
+    wikidataProperties: new Dictionary<string, string>
+    {
+        ["isbn13"] = "P212",
+        ["openlibrary"] = "P648"
+    },
+    editionPivot: new EditionPivotRule
+    {
+        WorkClasses = ["Q7725634"],                     // literary work
+        EditionClasses = ["Q3331189", "Q122731938"],    // edition, audiobook edition
+        PreferEdition = false                           // edition → work pivot only
+    });
+
+// Music album
+var music = Stage2Request.Music("album-7", "Random Access Memories", "Daft Punk");
+
+// Type-filtered text reconciliation (strict — CirrusSearchTypes required)
+var text = Stage2Request.Text("tv-12", "Breaking Bad", ["Q5398426"], author: null);
+
+var results = await reconciler.Stage2.ResolveBatchAsync([bridge, music, text]);
+foreach (var (key, result) in results)
+{
+    Console.WriteLine($"{key}: {result.MatchedBy} → {result.Qid} (IsEdition={result.IsEdition})");
+}
+```
+
+### Design
+
+- **Discriminated request hierarchy.** `IStage2Request` is a marker interface with three concrete implementations: `BridgeStage2Request`, `MusicStage2Request`, `TextStage2Request`. The service uses pattern matching on the concrete type rather than an auto-detect heuristic — there is no `Stage2Strategy.Auto` enum and no "if Title is non-empty guess Text" logic. Illegal combinations (like "set both BridgeIds and AlbumTitle") are not representable.
+- **Strict no-unfiltered-text rule.** `TextStage2Request.CirrusSearchTypes` is `required` and must be non-empty. To explicitly opt into running text reconciliation without a type filter, set `AllowUnfilteredText = true`. Forgetting to provide types throws `ArgumentException` instead of silently resolving nothing.
+- **Batch grouping by natural key.** `ResolveBatchAsync` groups identical requests so N callers submitting the same `(isbn13, 9780441172719)` pair share a single API round-trip. Bridge grouping uses the first non-empty ID in preferred order; music uses `(AlbumTitle, Artist)` normalized; text uses `(Title, Author, sorted CirrusSearchTypes)`.
+- **Edition pivoting via `EditionPivotRule`.** Media-type-agnostic — callers configure work classes, edition classes, and (optionally) a list of `RankingHint` values for picking the best edition among multiple matches. Ranking uses the library's existing `FuzzyMatcher.TokenSortRatio` against property claim values (or their resolved entity labels for entity-valued properties). Ties are broken by QID number ascending.
+- **`Stage2Result` does not leak claims.** The result carries `Qid`, `WorkQid`, `EditionQid`, `IsEdition`, `MatchedBy`, `PrimaryBridgeIdType`, `CollectedBridgeIds`, and `Label`. Consumers who need full entity data should follow up with `reconciler.Entities.GetEntitiesAsync([result.Qid])`.
+- **Static factory helpers.** `Stage2Request.Bridge(...)`, `.Music(...)`, `.Text(...)` make dynamic construction ergonomic for consumers that decide the strategy at runtime.
+
+### ASP.NET Core
+
+- `AddWikidataReconciliation()` now also registers `Stage2Service` as a singleton for direct injection.
+
+### Scope notes
+
+- Companion-name hints for `PersonsService.SearchAsync` remain a structural signal without a custom scoring term. Tracked for v2.3.
+- The plan's original v1.1.0 scope (as `wikidata-primitives-expansion.md`) is now fully landed across v2.0, v2.1, and v2.2.
+
 ## v2.1.0
 
 Additive release — no breaking changes on top of v2.0.0.

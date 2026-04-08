@@ -41,6 +41,9 @@ public sealed class WikidataReconciler : IDisposable
     /// <summary>Role-aware person search (humans + musical groups) with occupation filtering and year/work hints.</summary>
     public PersonsService Persons { get; }
 
+    /// <summary>Unified Stage 2 resolver for bridge IDs, music albums, and type-filtered text reconciliation.</summary>
+    public Stage2Service Stage2 { get; }
+
     public WikidataReconciler()
         : this(new WikidataReconcilerOptions()) { }
 
@@ -66,6 +69,7 @@ public sealed class WikidataReconciler : IDisposable
         Authors = new AuthorsService(_context, Reconcile);
         Labels = new LabelsService(_context);
         Persons = new PersonsService(_context, Reconcile, Labels);
+        Stage2 = new Stage2Service(_context, Reconcile, Entities, Editions, Labels);
     }
 
     // ─── Back-compat delegates (v1 API surface) ─────────────────────
