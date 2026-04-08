@@ -1,5 +1,11 @@
 # Changelog
 
+## v2.2.1
+
+Patch release — test-only changes.
+
+- **Integration test coverage for v2.0–v2.2 primitives.** Adds 28 live-Wikidata integration tests across five files: `LabelsIntegrationTests`, `AuthorsIntegrationTests`, `ChildrenIntegrationTests`, `PersonsIntegrationTests`, `Stage2IntegrationTests`. All tests carry `[Trait("Category", "Integration")]` so the default `dotnet test --filter "Category!=Integration"` run remains offline. Tests verify that each primitive actually hits the API, parses results, and returns the documented shape; they deliberately avoid pinning specific QIDs where reconciler scoring can return close-scoring candidates in non-deterministic order.
+
 ## v2.2.0
 
 Additive release — no breaking changes on top of v2.1.0.
