@@ -115,11 +115,52 @@ The reconciliation pipeline has four stages: dual search, entity fetching, weigh
 
 [Architecture overview](docs/architecture.md) — pipeline stages, internal components, design decisions
 
-## What's New in v1.0.0
+## What's New in v2.0.0
 
-- **Renamed from `Tuvima.WikidataReconciliation`** — package name now reflects the library's full scope: reconciliation, entity data, Wikipedia content, and graph traversal
-- **Graph module** — new `Tuvima.Wikidata.Graph` namespace with `EntityGraph` for in-memory entity graph traversal (pathfinding, family trees, cross-media detection, neighbor lookup, subgraph extraction). Zero dependencies, AOT compatible.
-- **v1.0.0 stability** — signals production readiness after 10 minor versions of real-world use
+`WikidataReconciler` is now a thin facade that exposes seven focused sub-services as properties. Each sub-service owns a slice of the API and can be injected independently in DI. All v1 top-level methods remain as delegating shims, so existing call sites compile unchanged.
+
+```csharp
+using var reconciler = new WikidataReconciler();
+
+// Reconciliation + suggest
+var matches = await reconciler.Reconcile.ReconcileAsync("Douglas Adams", "Q5");
+
+// Entity + Wikipedia data
+var entity = await reconciler.Entities.GetEntitiesAsync(["Q42"]);
+var summaries = await reconciler.Wikipedia.GetWikipediaSummariesAsync(["Q42"]);
+
+// NEW: structured label lookup
+var label = await reconciler.Labels.GetAsync("Q42", language: "de");
+
+// NEW: multi-author string resolution with pen-name detection
+var authors = await reconciler.Authors.ResolveAsync(new AuthorResolutionRequest
+{
+    RawAuthorString = "Neil Gaiman & Terry Pratchett",
+    DetectPseudonyms = true
+});
+
+// NEW: structured TV/music/comic/book manifest builder
+var seasons = await reconciler.Children.GetChildEntitiesAsync(new ChildEntityRequest
+{
+    ParentQid = "Q3577037",                // Breaking Bad
+    Kind = ChildEntityKind.TvSeasonsAndEpisodes,
+    MaxPrimary = 10,
+    MaxTotal = 200
+});
+```
+
+**Breaking changes** — see [`docs/migrating-to-v2.md`](docs/migrating-to-v2.md) for full migration steps:
+
+- `ReconciliationRequest.Type` (singular) removed — use `Types = ["Q5"]`
+- `PropertyConstraint.Value` (singular) removed — use `new PropertyConstraint("P569", "1952-03-11")` or `Values = [...]`
+- `GetAuthorPseudonymsAsync` + `PseudonymInfo` deleted — use `Authors.ResolveAsync(...)`
+- `GetChildEntitiesAsync(parent, "^P179", ...)` renamed to `Children.TraverseChildrenAsync(parent, "P179", Direction.Incoming, ...)` — the `^P` string prefix is gone, use the `Direction` enum
+- `Direction` moved from `Tuvima.Wikidata.Graph` to the root `Tuvima.Wikidata` namespace (enclosing-namespace rule means existing code keeps working)
+
+**Deferred to follow-up releases:**
+
+- v2.1.0 — `Persons.SearchAsync` (role-aware person search, musical group handling, year/companion hints)
+- v2.2.0 — `Stage2.ResolveBatchAsync` (unified bridge/music/text resolver with discriminated request types and edition pivoting)
 
 See the [changelog](docs/changelog.md) for the full version history.
 

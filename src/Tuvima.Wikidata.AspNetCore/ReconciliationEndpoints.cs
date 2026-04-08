@@ -237,10 +237,12 @@ public static class ReconciliationEndpoints
 
     private static ReconciliationRequest MapToRequest(W3cQuery query, string? acceptLanguage = null)
     {
+        var types = !string.IsNullOrEmpty(query.Type) ? new[] { query.Type } : null;
+
         var request = new ReconciliationRequest
         {
             Query = query.Query ?? "",
-            Type = query.Type,
+            Types = types,
             Limit = query.Limit > 0 ? query.Limit : 5,
             Language = acceptLanguage
         };
@@ -256,7 +258,7 @@ public static class ReconciliationEndpoints
                 return new ReconciliationRequest
                 {
                     Query = request.Query,
-                    Type = request.Type,
+                    Types = types,
                     Limit = request.Limit,
                     Language = acceptLanguage,
                     Properties = props

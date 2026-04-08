@@ -1,5 +1,56 @@
 # Changelog
 
+## v2.0.0
+
+**Breaking release** — introduces a facade/sub-service architecture and deletes three deprecated API shapes. See `docs/migrating-to-v2.md` for a step-by-step migration guide.
+
+### New — facade + sub-services
+
+`WikidataReconciler` is now a thin facade that exposes seven focused sub-services as properties. Each sub-service owns a slice of the API surface and can be injected independently:
+
+| Property | Service | Covers |
+|---|---|---|
+| `reconciler.Reconcile` | `ReconciliationService` | `ReconcileAsync`, `ReconcileBatchAsync`, `ReconcileBatchStreamAsync`, `SuggestAsync`, `SuggestPropertiesAsync`, `SuggestTypesAsync` |
+| `reconciler.Entities` | `EntityService` | `GetEntitiesAsync`, `GetPropertiesAsync`, `LookupByExternalIdAsync`, `GetPropertyLabelsAsync`, `GetImageUrlsAsync`, `GetRevisionIdsAsync`, `GetRecentChangesAsync` |
+| `reconciler.Wikipedia` | `WikipediaService` | `GetWikipediaUrlsAsync`, `GetWikipediaSummariesAsync`, `GetWikipediaSectionsAsync`, `GetWikipediaSectionContentAsync`, `GetWikipediaSectionWithSubsectionsAsync` |
+| `reconciler.Editions` | `EditionService` | `GetEditionsAsync`, `GetWorkForEditionAsync` |
+| `reconciler.Children` | `ChildrenService` | `TraverseChildrenAsync` (generic), `GetChildEntitiesAsync` (new manifest builder) |
+| `reconciler.Authors` | `AuthorsService` | `ResolveAsync` (new multi-author + pen-name resolver) |
+| `reconciler.Labels` | `LabelsService` | `GetAsync`, `GetBatchAsync` (new single/batch label lookup) |
+
+All v1 top-level methods on `WikidataReconciler` remain as delegating shims, so existing v1 call sites compile unchanged. New code should prefer the sub-service properties.
+
+### New — primitives
+
+- **`reconciler.Labels`** — `GetAsync(qid, language, withFallbackLanguage)` and `GetBatchAsync(qids, ...)` replace the manual `GetEntitiesAsync([qid])` + `TryGetValue` dance for pure label lookups. `GetBatchAsync` returns `IReadOnlyDictionary<string, string?>` with every input QID present (no silent-drop).
+- **`reconciler.Authors.ResolveAsync(AuthorResolutionRequest)`** — splits multi-author strings on `" and "`, `" & "`, `"; "`, `", "`, `" with "`, and `"、"`, with "Last, First" detection and trailing `et al.` capture. Returns per-author `ResolvedAuthor` entries with optional pen-name information (`RealNameQid`).
+- **`reconciler.Children.GetChildEntitiesAsync(ChildEntityRequest)`** — structured manifest builder with presets `TvSeasonsAndEpisodes`, `MusicTracks`, `ComicIssues`, `BookSequels`, and `Custom` escape-hatch. Returns `ChildEntityManifest` with a `Children` list of `ChildEntityRef` (Qid, Title, Ordinal, Parent, ReleaseDate, Duration, Creators). Honours `MaxPrimary` and `MaxTotal` caps deterministically.
+
+### New — ASP.NET Core
+
+- `AddWikidataReconciliation()` now also registers every sub-service (`ReconciliationService`, `EntityService`, `WikipediaService`, `EditionService`, `ChildrenService`, `AuthorsService`, `LabelsService`) so advanced consumers can inject just the slice they need without going through the facade.
+
+### Breaking — removed
+
+- **`ReconciliationRequest.Type` (singular)** — removed. Use `Types` (plural) for every type filter, even when filtering by a single type. v1 had both fields with "`Types` wins" precedence rules, which was a source of confusion.
+- **`PropertyConstraint.Value` (singular)** — removed, along with the internal `GetEffectiveValues()` helper. Use `Values` (plural) directly, or the convenience constructor `new PropertyConstraint("P569", "1952-03-11")` which wraps a single value internally.
+- **`GetAuthorPseudonymsAsync(string entityQid, ...)`** — removed along with `PseudonymInfo`. Subsumed by `reconciler.Authors.ResolveAsync(...)` which integrates pen-name detection into the multi-author resolution flow.
+
+### Breaking — renamed / moved
+
+- **`GetChildEntitiesAsync(string parentQid, string relationshipProperty, ...)`** — renamed to **`reconciler.Children.TraverseChildrenAsync(parentQid, relationshipProperty, Direction direction = Direction.Outgoing, ...)`**. The `^P` string prefix for reverse traversal is gone; use `Direction.Incoming` instead.
+- **`GetChildEntitiesAsync`** (the name) is now taken by the new manifest-builder primitive that accepts a `ChildEntityRequest` and returns a `ChildEntityManifest`.
+- **`Direction` enum** — moved from `Tuvima.Wikidata.Graph` to the root `Tuvima.Wikidata` namespace. It is now shared between the graph module and child-entity traversal. For consumers who wrote `using Tuvima.Wikidata.Graph;` and referenced `Direction`, the enum still resolves via C#'s enclosing-namespace rule — no action needed unless you had a fully qualified `Tuvima.Wikidata.Graph.Direction` reference (change to `Tuvima.Wikidata.Direction`).
+
+### Deferred
+
+- **Persons service** (SearchPersonAsync with role → occupation mapping, year hints, group expansion) is planned for **v2.1**.
+- **Stage 2 resolver** (ResolveStage2BatchAsync with discriminated Bridge/Music/Text request types and edition pivoting) is planned for **v2.2**.
+
+### Migration
+
+See `docs/migrating-to-v2.md` for before/after snippets and sed-ready find/replace patterns for every break.
+
 ## v1.0.0
 
 - **Renamed from `Tuvima.WikidataReconciliation` to `Tuvima.Wikidata`** — package name now reflects the library's full scope: reconciliation, entity data, Wikipedia content, and graph traversal. All public types keep their names; only the namespace changes (`using Tuvima.WikidataReconciliation` becomes `using Tuvima.Wikidata`).

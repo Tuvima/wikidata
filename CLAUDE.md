@@ -8,10 +8,22 @@ Two NuGet packages:
 - `Tuvima.Wikidata` — core library, zero external dependencies
 - `Tuvima.Wikidata.AspNetCore` — W3C Reconciliation API middleware for ASP.NET Core
 
-## Architecture
+## Architecture (v2.0.0)
+
+`WikidataReconciler` is a thin **facade** that owns a shared `ReconcilerContext` (HttpClient, options, search/fetcher/scorer/type-checker collaborators, global concurrency limiter) and exposes seven focused **sub-services** as properties:
 
 ```
-WikidataReconciler (public entry point)
+WikidataReconciler (facade, owns ReconcilerContext)
+├── Reconcile    → ReconciliationService   (reconcile + batch + stream + suggest)
+├── Entities     → EntityService           (entities, properties, external ID, labels, images, revisions, changes)
+├── Wikipedia    → WikipediaService        (URLs, summaries, sections, subsection extraction)
+├── Editions     → EditionService          (P747 editions, P629 work-for-edition)
+├── Children     → ChildrenService         (generic TraverseChildrenAsync, ChildEntityManifest builder)
+├── Authors      → AuthorsService          (multi-author split + pen-name resolution)
+└── Labels       → LabelsService           (single + batch label lookup with fallback chain)
+
+Shared internals (Tuvima.Wikidata.Internal):
+├── ReconcilerContext           <- shared state for all sub-services
 ├── WikidataSearchClient        <- dual search: wbsearchentities + full-text
 ├── WikidataEntityFetcher       <- wbgetentities in batches of 50, rank-aware
 ├── ReconciliationScorer        <- weighted label + property scoring
@@ -27,9 +39,12 @@ WikidataReconciler (public entry point)
 EntityGraph (graph module — Tuvima.Wikidata.Graph namespace)
 ├── GraphNode                   <- entity node input model (Qid, Label, Type, WorkQids)
 ├── GraphEdge                   <- relationship edge input model (SubjectQid, Relationship, ObjectQid)
-├── Direction                   <- enum: Outgoing, Incoming
 └── EntityGraph                 <- adjacency list graph with BFS traversal methods
+
+Direction enum (Tuvima.Wikidata root namespace, shared by Graph + ChildrenService)
 ```
+
+All v1 top-level methods on `WikidataReconciler` remain as delegating shims forwarding to the owning sub-service, so v1 call sites keep working. New code should prefer the sub-service properties.
 
 ### Reconciliation Pipeline (4 stages)
 
@@ -43,34 +58,50 @@ EntityGraph (graph module — Tuvima.Wikidata.Graph namespace)
 ```
 src/
 ├── Tuvima.Wikidata/                         # Core library
-│   ├── WikidataReconciler.cs                # Main entry point — all public methods
+│   ├── WikidataReconciler.cs                # Facade — owns ReconcilerContext, exposes 7 sub-services
+│   ├── Direction.cs                         # Enum: Outgoing, Incoming (shared with Graph module)
 │   ├── WikidataReconcilerOptions.cs         # 14 configuration options
-│   ├── ReconciliationRequest.cs             # Query, Type/Types, ExcludeTypes, Properties, Language/Languages, Limit, DiacriticInsensitive, Cleaners, TypeHierarchyDepth
+│   ├── ReconciliationRequest.cs             # Query, Types, ExcludeTypes, Properties, Language/Languages, Limit, DiacriticInsensitive, Cleaners, TypeHierarchyDepth
 │   ├── ReconciliationResult.cs              # Id, Name, Description, Score, Match, Types, Breakdown
 │   ├── ScoreBreakdown.cs                    # LabelScore, PropertyScores, TypeMatched, UniqueIdMatch
 │   ├── SuggestResult.cs                     # Id, Name, Description
-│   ├── PropertyConstraint.cs                # PropertyId, Value, Values (single or multi-value constraints)
+│   ├── PropertyConstraint.cs                # PropertyId, Values (always plural in v2)
 │   ├── WikidataEntityInfo.cs                # Id, Label, Description, Aliases, Claims, LastRevisionId, Modified
 │   ├── WikidataClaim.cs                     # PropertyId, Rank, Value, Qualifiers, QualifierOrder
-│   ├── WikidataValue.cs                     # Kind, RawValue, EntityId, EntityLabel, Time, Quantity, Coords + ToDisplayString()
+│   ├── WikidataValue.cs                     # Kind, RawValue, EntityId, EntityLabel, TimePrecision, Amount, Unit, Lat, Lng
 │   ├── EntityRevision.cs                    # EntityId, RevisionId, Timestamp (lightweight staleness check)
 │   ├── EntityChange.cs                      # EntityId, ChangeType, Timestamp, User, Comment, RevisionId
 │   ├── WikipediaSummary.cs                  # EntityId, Title, Extract, Description, ThumbnailUrl, ArticleUrl, Language
 │   ├── WikipediaSection.cs                  # Title, Index, Level, Number, Anchor (TOC entry)
-│   ├── ChildEntityInfo.cs                   # EntityId, Label, Description, Ordinal, Properties (generic child discovery)
+│   ├── ChildEntityInfo.cs                   # EntityId, Label, Description, Ordinal, Properties (TraverseChildrenAsync result shape)
+│   ├── ChildEntityRequest.cs                # Manifest-builder input: ParentQid, Kind, MaxPrimary, MaxTotal, Language, CustomTraversal
+│   ├── ChildEntityKind.cs                   # Preset enum: TvSeasonsAndEpisodes | MusicTracks | ComicIssues | BookSequels | Custom
+│   ├── CustomChildTraversal.cs              # Escape hatch for ChildEntityKind.Custom (RelationshipProperty, Direction, ChildTypeFilter, OrdinalProperty, CreatorRoles)
+│   ├── ChildEntityManifest.cs               # Structured output: ParentQid, PrimaryCount, TotalCount, Children
+│   ├── ChildEntityRef.cs                    # Single child: Qid, Title, Ordinal, Parent, ReleaseDate, Duration, Creators
 │   ├── EditionInfo.cs                       # EntityId, Label, Description, Types, Claims (P747 edition data)
-│   ├── PseudonymInfo.cs                     # AuthorEntityId, AuthorLabel, Pseudonyms (P742)
+│   ├── AuthorResolutionRequest.cs           # Authors.ResolveAsync input: RawAuthorString, WorkQidHint, Language, DetectPseudonyms
+│   ├── AuthorResolutionResult.cs            # Authors.ResolveAsync output: Authors, UnresolvedNames
+│   ├── ResolvedAuthor.cs                    # Per-author result: OriginalName, Qid, CanonicalName, RealNameQid, Confidence
 │   ├── SectionContent.cs                    # Title, Content (structured section content for subsection handling)
 │   ├── QueryCleaners.cs                     # Built-in title pre-cleaning functions
 │   ├── CachingDelegatingHandler.cs          # Abstract HTTP caching base class
+│   ├── Services/                            # Sub-service facade layer (v2.0.0)
+│   │   ├── ReconciliationService.cs         # Reconcile, batch, stream, suggest
+│   │   ├── EntityService.cs                 # Entities, properties, external ID, labels, images, revisions, changes
+│   │   ├── WikipediaService.cs              # URLs, summaries, sections, subsection extraction
+│   │   ├── EditionService.cs                # P747 editions, P629 work-for-edition
+│   │   ├── ChildrenService.cs               # TraverseChildrenAsync (generic) + GetChildEntitiesAsync (manifest)
+│   │   ├── AuthorsService.cs                # ResolveAsync — multi-author split + pen-name detection
+│   │   └── LabelsService.cs                 # GetAsync, GetBatchAsync with language fallback
 │   ├── Graph/                               # Entity graph traversal module
 │   │   ├── EntityGraph.cs                   # Core graph class — adjacency lists, BFS pathfinding, family trees
 │   │   ├── GraphNode.cs                     # Entity node input model (Qid, Label, Type, WorkQids)
-│   │   ├── GraphEdge.cs                     # Relationship edge input model (SubjectQid, Relationship, ObjectQid)
-│   │   └── Direction.cs                     # Enum: Outgoing, Incoming
+│   │   └── GraphEdge.cs                     # Relationship edge input model (SubjectQid, Relationship, ObjectQid)
 │   ├── Properties/
 │   │   └── AssemblyInfo.cs                  # InternalsVisibleTo for tests
 │   └── Internal/
+│       ├── ReconcilerContext.cs             # Shared state holder for facade and all sub-services
 │       ├── WikidataSearchClient.cs          # Dual search + suggest + external ID lookup + type-filtered + multi-language
 │       ├── WikidataEntityFetcher.cs         # Entity fetching with rank hierarchy + sitelinks
 │       ├── ReconciliationScorer.cs          # Weighted scoring formula + unique ID shortcut
@@ -99,6 +130,9 @@ src/
 tests/
 └── Tuvima.Wikidata.Tests/
     ├── IntegrationTests.cs                  # Live Wikidata API tests (Category=Integration)
+    ├── FacadeShapeTests.cs                  # Facade contract tests (v2.0.0: sub-service exposure, DTO shapes)
+    ├── AuthorsSplitterTests.cs              # Unit tests for AuthorsService.SplitAuthors
+    ├── EntityGraphTests.cs                  # Unit tests for the graph module
     ├── FuzzyMatcherTests.cs                 # Unit tests for fuzzy matching
     ├── PropertyMatcherTests.cs              # Unit tests for property matching
     └── LanguageFallbackTests.cs             # Unit tests for language fallback
@@ -109,41 +143,77 @@ docs/
 ├── aspnetcore.md                            # ASP.NET Core integration guide
 ├── configuration.md                         # Configuration options guide
 ├── architecture.md                          # Architecture overview
+├── migrating-to-v2.md                       # v1 → v2.0.0 migration guide
 └── changelog.md                             # Version history
 ```
 
 ## Public API Reference
 
-### WikidataReconciler Methods
+New code should call sub-services via `reconciler.{Service}.{Method}(...)`. All top-level methods listed here remain on `WikidataReconciler` as delegating shims for v1 source-compat.
+
+### `reconciler.Reconcile` — `ReconciliationService`
 
 | Method | Purpose |
 |---|---|
 | `ReconcileAsync(query)` | Match text to Wikidata entities |
 | `ReconcileAsync(query, type)` | Match with type filter (e.g., "Q5" for humans) |
-| `ReconcileAsync(ReconciliationRequest)` | Full options: type/types, properties, language/languages, limit, exclude types, diacritics, cleaners |
+| `ReconcileAsync(ReconciliationRequest)` | Full options: `Types` (plural only in v2), properties, language/languages, limit, exclude types, diacritics, cleaners |
 | `ReconcileBatchAsync(requests)` | Parallel batch with concurrency limiting |
 | `ReconcileBatchStreamAsync(requests)` | `IAsyncEnumerable` — yields results as they complete |
 | `SuggestAsync(prefix)` | Entity autocomplete |
-| `SuggestPropertiesAsync(prefix)` | Property autocomplete (wbsearchentities type=property) |
+| `SuggestPropertiesAsync(prefix)` | Property autocomplete |
 | `SuggestTypesAsync(prefix)` | Type/class autocomplete |
+
+### `reconciler.Entities` — `EntityService`
+
+| Method | Purpose |
+|---|---|
 | `GetEntitiesAsync(qids)` | Full entity data with claims and qualifiers |
 | `GetEntitiesAsync(qids, resolveEntityLabels)` | Full entity data with auto-resolved entity reference labels |
 | `GetPropertiesAsync(qids, propertyIds)` | Specific properties with auto-resolved entity labels |
-| `GetWikipediaUrlsAsync(qids)` | QID -> Wikipedia article URL via sitelinks |
-| `GetWikipediaSummariesAsync(qids)` | Wikipedia article summaries (extract, thumbnail, URL) |
-| `GetWikipediaSummariesAsync(qids, lang, fallbacks)` | Wikipedia summaries with language fallback |
 | `LookupByExternalIdAsync(propertyId, value)` | Find entity by ISBN/IMDB/VIAF/ORCID via haswbstatement |
-| `GetPropertyLabelsAsync(propertyIds)` | P569 -> "date of birth" |
+| `GetPropertyLabelsAsync(propertyIds)` | P569 → "date of birth" |
 | `GetImageUrlsAsync(qids)` | Wikimedia Commons image URLs from P18 claims |
-| `GetWikipediaSectionsAsync(qids)` | Wikipedia article table of contents (section names, levels, indices) |
-| `GetWikipediaSectionContentAsync(qid, index)` | Specific Wikipedia section as plain text (heading stripped) |
-| `GetWikipediaSectionWithSubsectionsAsync(qid, index)` | Section + subsections as structured list of `SectionContent` |
 | `GetRevisionIdsAsync(qids)` | Lightweight staleness check — returns only revision IDs and timestamps |
 | `GetRecentChangesAsync(qids, since)` | Detailed entity change history for audit/monitoring |
-| `GetChildEntitiesAsync(parentQid, property, ...)` | Generic parent->child traversal with type filtering, ordering, reverse lookup |
+
+### `reconciler.Wikipedia` — `WikipediaService`
+
+| Method | Purpose |
+|---|---|
+| `GetWikipediaUrlsAsync(qids)` | QID → Wikipedia article URL via sitelinks |
+| `GetWikipediaSummariesAsync(qids)` | Wikipedia article summaries (extract, thumbnail, URL) |
+| `GetWikipediaSummariesAsync(qids, lang, fallbacks)` | Wikipedia summaries with language fallback |
+| `GetWikipediaSectionsAsync(qids)` | Wikipedia article table of contents |
+| `GetWikipediaSectionContentAsync(qid, index)` | Specific Wikipedia section as plain text |
+| `GetWikipediaSectionWithSubsectionsAsync(qid, index)` | Section + subsections as structured list of `SectionContent` |
+
+### `reconciler.Editions` — `EditionService`
+
+| Method | Purpose |
+|---|---|
 | `GetEditionsAsync(workQid, filterTypes?)` | Fetch editions/translations (P747) of a work entity |
 | `GetWorkForEditionAsync(editionQid)` | Find parent work (P629) from an edition |
-| `GetAuthorPseudonymsAsync(entityQid)` | Detect pseudonyms (P742) for authors (P50) |
+
+### `reconciler.Children` — `ChildrenService`
+
+| Method | Purpose |
+|---|---|
+| `TraverseChildrenAsync(parentQid, property, direction)` | Generic parent → child traversal. `Direction.Outgoing` (default) follows the property forward; `Direction.Incoming` finds entities whose property points to parent. Replaces v1 `GetChildEntitiesAsync(string, string, ...)` and the `^P` reverse-prefix convention. |
+| `GetChildEntitiesAsync(ChildEntityRequest)` | **NEW.** Builds a structured `ChildEntityManifest` from presets (`TvSeasonsAndEpisodes`, `MusicTracks`, `ComicIssues`, `BookSequels`, `Custom`). Honours `MaxPrimary` and `MaxTotal` caps. |
+
+### `reconciler.Authors` — `AuthorsService`
+
+| Method | Purpose |
+|---|---|
+| `ResolveAsync(AuthorResolutionRequest)` | **NEW.** Splits multi-author strings (handles `" and "`, `" & "`, `"; "`, `", "`, `" with "`, `"、"`, and "Last, First" form), reconciles each name against Q5, optionally detects pen names via P742, captures trailing `et al.` in `UnresolvedNames`. Replaces v1 `GetAuthorPseudonymsAsync` + `PseudonymInfo`. |
+
+### `reconciler.Labels` — `LabelsService`
+
+| Method | Purpose |
+|---|---|
+| `GetAsync(qid, language, withFallbackLanguage)` | **NEW.** Single-entity label lookup with optional language fallback chain. |
+| `GetBatchAsync(qids, language, withFallbackLanguage)` | **NEW.** Batch variant returning `IReadOnlyDictionary<string, string?>` — every input QID is present in the result dictionary (null means no label in requested language, absent means entity not found). |
 
 ### EntityGraph Methods (Tuvima.Wikidata.Graph)
 

@@ -45,7 +45,7 @@ public class IntegrationTests : IDisposable
         var results = await _reconciler.ReconcileAsync(new ReconciliationRequest
         {
             Query = "1984",
-            Type = "Q7725634", // literary work
+            Types = ["Q7725634"], // literary work
             Limit = 10
         });
 
@@ -107,7 +107,7 @@ public class IntegrationTests : IDisposable
         var resultsWithProps = await _reconciler.ReconcileAsync(new ReconciliationRequest
         {
             Query = "Douglas Adams",
-            Type = "Q5",
+            Types = ["Q5"],
             Properties =
             [
                 new PropertyConstraint("P27", "Q145") // country of citizenship: United Kingdom
@@ -129,7 +129,7 @@ public class IntegrationTests : IDisposable
         var results = await _reconciler.ReconcileAsync(new ReconciliationRequest
         {
             Query = "Douglas Adams",
-            Type = "Q5",
+            Types = ["Q5"],
             Properties =
             [
                 new PropertyConstraint("P27", "Q145")
@@ -376,7 +376,7 @@ public class IntegrationTests : IDisposable
         var results = await reconciler.ReconcileAsync(new ReconciliationRequest
         {
             Query = "Douglas Adams",
-            Type = "Q215627", // person (superclass of human)
+            Types = ["Q215627"], // person (superclass of human)
             Limit = 5
         });
 

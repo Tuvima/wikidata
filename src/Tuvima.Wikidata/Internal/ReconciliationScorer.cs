@@ -113,8 +113,7 @@ internal sealed class ReconciliationScorer
             dataType = claims.FirstOrDefault()?.MainSnak?.DataType;
         }
 
-        var effectiveValues = constraint.GetEffectiveValues();
-        if (effectiveValues.Count == 0)
+        if (constraint.Values is not { Count: > 0 } effectiveValues)
             return 0;
 
         // For each constraint value, find the best match across all entity claim values.
