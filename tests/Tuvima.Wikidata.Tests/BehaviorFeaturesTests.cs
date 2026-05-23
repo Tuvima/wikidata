@@ -6,6 +6,78 @@ namespace Tuvima.Wikidata.Tests;
 public class BehaviorFeaturesTests
 {
     [Fact]
+    public async Task ReconcileAsync_ExactQid_FetchesEntityWithoutTextSearch()
+    {
+        var handler = new TestHttpMessageHandler((request, _) =>
+        {
+            var uri = Uri.UnescapeDataString(request.RequestUri!.ToString());
+
+            if (uri.Contains("action=wbgetentities", StringComparison.OrdinalIgnoreCase) &&
+                uri.Contains("ids=Q155653", StringComparison.OrdinalIgnoreCase))
+            {
+                return Task.FromResult(TestHttpMessageHandler.Json(EntityResponse(
+                    TestPayloads.Entity("Q155653", "Spirited Away", claims: TestPayloads.Claims(
+                        ("P31", "wikibase-item", TestPayloads.ItemDataValue("Q202866"), "normal"))))));
+            }
+
+            throw new InvalidOperationException($"Unexpected request: {uri}");
+        });
+
+        using var reconciler = TestPayloads.CreateReconciler(handler);
+
+        var results = await reconciler.Reconcile.ReconcileAsync(new ReconciliationRequest
+        {
+            Query = "q155653",
+            Types = ["Q11424", "Q202866"],
+            Limit = 10
+        });
+
+        var result = Assert.Single(results);
+        Assert.Equal("Q155653", result.Id);
+        Assert.Equal("Spirited Away", result.Name);
+        Assert.Equal(100, result.Score);
+        Assert.True(result.Match);
+        Assert.Equal(["Q202866"], result.Types);
+        Assert.True(result.Breakdown!.UniqueIdMatch);
+        Assert.True(result.Breakdown.TypeMatched);
+
+        var requests = handler.RequestedUris.Select(Uri.UnescapeDataString).ToArray();
+        Assert.Single(requests);
+        Assert.DoesNotContain(requests, uri => uri.Contains("action=wbsearchentities", StringComparison.OrdinalIgnoreCase));
+        Assert.DoesNotContain(requests, uri => uri.Contains("action=query&list=search", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public async Task ReconcileAsync_ExactQid_StillHonorsTypeConstraints()
+    {
+        var handler = new TestHttpMessageHandler((request, _) =>
+        {
+            var uri = Uri.UnescapeDataString(request.RequestUri!.ToString());
+
+            if (uri.Contains("action=wbgetentities", StringComparison.OrdinalIgnoreCase) &&
+                uri.Contains("ids=Q155653", StringComparison.OrdinalIgnoreCase))
+            {
+                return Task.FromResult(TestHttpMessageHandler.Json(EntityResponse(
+                    TestPayloads.Entity("Q155653", "Spirited Away", claims: TestPayloads.Claims(
+                        ("P31", "wikibase-item", TestPayloads.ItemDataValue("Q202866"), "normal"))))));
+            }
+
+            throw new InvalidOperationException($"Unexpected request: {uri}");
+        });
+
+        using var reconciler = TestPayloads.CreateReconciler(handler);
+
+        var results = await reconciler.Reconcile.ReconcileAsync(new ReconciliationRequest
+        {
+            Query = "Q155653",
+            Types = ["Q5"],
+            Limit = 10
+        });
+
+        Assert.Empty(results);
+    }
+
+    [Fact]
     public async Task SearchMultiLanguageAsync_RunsFullTextOnlyOnce()
     {
         var handler = new TestHttpMessageHandler((request, _) =>

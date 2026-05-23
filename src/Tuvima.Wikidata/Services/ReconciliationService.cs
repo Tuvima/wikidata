@@ -60,6 +60,19 @@ public sealed class ReconciliationService
             subclassResolver = new SubclassResolver(_ctx.EntityFetcher, request.TypeHierarchyDepth.Value);
         }
 
+        if (TryNormalizeQid(searchQuery, out var exactQid))
+        {
+            return await ReconcileExactQidAsync(
+                exactQid,
+                request,
+                language,
+                effectiveTypes,
+                hasTypeConstraint,
+                subclassResolver,
+                options,
+                cancellationToken).ConfigureAwait(false);
+        }
+
         // Step 1: Search for candidate entity IDs
         var useMultiLanguage = request.Languages is { Count: > 1 };
         var searchTasks = new List<Task<List<string>>>();
@@ -185,6 +198,69 @@ public sealed class ReconciliationService
         return results;
     }
 
+    private async Task<IReadOnlyList<ReconciliationResult>> ReconcileExactQidAsync(
+        string qid,
+        ReconciliationRequest request,
+        string language,
+        IReadOnlyList<string>? effectiveTypes,
+        bool hasTypeConstraint,
+        SubclassResolver? subclassResolver,
+        WikidataReconcilerOptions options,
+        CancellationToken cancellationToken)
+    {
+        var entities = await _ctx.EntityFetcher.FetchEntitiesAllLanguagesAsync(
+            [qid], options.IncludeSitelinkLabels, cancellationToken).ConfigureAwait(false);
+
+        if (!entities.TryGetValue(qid, out var entity)
+            || string.IsNullOrWhiteSpace(entity.Id)
+            || !string.Equals(entity.Type, "item", StringComparison.OrdinalIgnoreCase))
+        {
+            return [];
+        }
+
+        var typeResult = await _ctx.TypeChecker.CheckAsync(
+            entity,
+            effectiveTypes,
+            request.ExcludeTypes,
+            subclassResolver,
+            language,
+            cancellationToken).ConfigureAwait(false);
+
+        if (typeResult == TypeMatchResult.Excluded || typeResult == TypeMatchResult.NotMatched)
+            return [];
+
+        LanguageFallback.TryGetValue(entity.Labels, language, out var label);
+        LanguageFallback.TryGetValue(entity.Descriptions, language, out var description);
+
+        var types = WikidataEntityFetcher.GetTypeIds(entity, options.TypePropertyId);
+        var typePenaltyApplied = typeResult == TypeMatchResult.NoType && hasTypeConstraint;
+        var score = typePenaltyApplied ? 50.0 : 100.0;
+
+        return
+        [
+            new ReconciliationResult
+            {
+                Id = entity.Id,
+                Name = string.IsNullOrEmpty(label) ? entity.Id : label,
+                Description = string.IsNullOrEmpty(description) ? null : description,
+                Score = score,
+                Match = !typePenaltyApplied,
+                Types = types.Count > 0 ? types : null,
+                MatchedLabel = string.IsNullOrEmpty(label) ? entity.Id : label,
+                Breakdown = new ScoreBreakdown
+                {
+                    LabelScore = 100,
+                    MatchedLabel = string.IsNullOrEmpty(label) ? entity.Id : label,
+                    PropertyScores = new Dictionary<string, double>(),
+                    TypeMatched = !hasTypeConstraint ? null : typeResult == TypeMatchResult.Matched,
+                    WeightedScore = score,
+                    TypePenaltyApplied = typePenaltyApplied,
+                    UniqueIdMatch = true
+                }
+            }
+        ];
+    }
+
     /// <summary>
     /// Reconciles multiple queries in parallel, respecting the configured concurrency limit.
     /// </summary>
@@ -284,5 +360,27 @@ public sealed class ReconciliationService
         }
 
         return string.Compare(a, b, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool TryNormalizeQid(string value, out string qid)
+    {
+        qid = "";
+        value = value.Trim();
+
+        if (value.Length < 2 || value[0] is not ('Q' or 'q') || value[1] == '0')
+            return false;
+
+        for (var i = 1; i < value.Length; i++)
+        {
+            if (!char.IsDigit(value[i]))
+                return false;
+        }
+
+        qid = string.Create(value.Length, value, static (buffer, source) =>
+        {
+            buffer[0] = 'Q';
+            source.AsSpan(1).CopyTo(buffer[1..]);
+        });
+        return true;
     }
 }

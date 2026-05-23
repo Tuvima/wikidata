@@ -264,6 +264,10 @@ var results = await reconciler.Reconcile.ReconcileAsync("Q42");
 // results[0].Id == "Q42", Score == 100
 ```
 
+Exact QID requests are fetched directly with `wbgetentities`; they do not go
+through text search. If you include `Types` or `ExcludeTypes`, those constraints
+are still applied before a result is returned.
+
 If you just need the display label without full reconciliation, use `reconciler.Labels.GetAsync("Q42")` instead — one round-trip, no scoring.
 
 ## Person Search with Role Awareness (v2.1)

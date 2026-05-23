@@ -1,5 +1,12 @@
 # Changelog
 
+## v3.0.3
+
+Patch release improving direct Wikidata identity lookup.
+
+- Exact QID reconciliation requests such as `Q155653` now fetch the entity directly with `wbgetentities` instead of sending the QID through text search.
+- Direct QID reconciliation still honors requested type and exclusion constraints, so callers get deterministic identity lookup without bypassing media-kind safety checks.
+
 ## v3.0.2
 
 Patch release improving film-franchise manifest discovery.
