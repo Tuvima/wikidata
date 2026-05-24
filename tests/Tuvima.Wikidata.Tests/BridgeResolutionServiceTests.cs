@@ -3,6 +3,75 @@ namespace Tuvima.Wikidata.Tests;
 public class BridgeResolutionServiceTests
 {
     [Fact]
+    public async Task ResolveBatchStreamAsync_YieldsResultsAndProgressEvents()
+    {
+        var events = new List<WikidataProgressEvent>();
+        var handler = new TestHttpMessageHandler((request, _) =>
+        {
+            var uri = Uri.UnescapeDataString(request.RequestUri!.ToString());
+
+            if (uri.Contains("haswbstatement:P345=tt0903747", StringComparison.OrdinalIgnoreCase))
+                return Task.FromResult(TestHttpMessageHandler.Json(TestPayloads.QueryResponse("Q1")));
+
+            if (uri.Contains("action=wbgetentities", StringComparison.OrdinalIgnoreCase) &&
+                uri.Contains("ids=Q1", StringComparison.OrdinalIgnoreCase))
+            {
+                return Task.FromResult(TestHttpMessageHandler.Json(TestPayloads.EntityResponse(
+                    TestPayloads.Entity("Q1", "Breaking Bad", claims: TestPayloads.Claims(
+                        ("P31", "wikibase-item", TestPayloads.ItemDataValue("Q5398426"), "normal"),
+                        ("P345", "external-id", TestPayloads.StringDataValue("tt0903747"), "normal"))))));
+            }
+
+            throw new InvalidOperationException($"Unexpected request: {uri}");
+        });
+
+        using var reconciler = new WikidataReconciler(
+            TestPayloads.CreateHttpClient(handler),
+            new WikidataReconcilerOptions
+            {
+                UserAgent = "Tuvima.Wikidata.Tests/3.1 (https://github.com/Tuvima/wikidata)",
+                EnableResponseCaching = false,
+                WikidataRateLimit = ProviderRateLimitOptions.Unthrottled,
+                WikipediaRateLimit = ProviderRateLimitOptions.Unthrottled,
+                CommonsRateLimit = ProviderRateLimitOptions.Unthrottled,
+                DefaultRateLimit = ProviderRateLimitOptions.Unthrottled,
+                ProgressReporter = events.Add
+            });
+
+        var results = new List<BridgeResolutionResult>();
+        await foreach (var result in reconciler.Bridge.ResolveBatchStreamAsync([
+            new BridgeResolutionRequest
+            {
+                CorrelationKey = "show",
+                MediaKind = BridgeMediaKind.TvSeries,
+                BridgeIds = new Dictionary<string, string> { ["imdb_id"] = "tt0903747" }
+            }
+        ]))
+        {
+            results.Add(result);
+        }
+
+        var resolved = Assert.Single(results);
+        Assert.True(resolved.Found);
+        Assert.Equal("show", resolved.CorrelationKey);
+        Assert.Equal("Q1", resolved.SelectedCandidate?.Qid);
+        Assert.Contains(events, e => e.Phase == WikidataProgressPhases.Planned);
+        Assert.Contains(events, e => e.Phase == WikidataProgressPhases.ExternalIdLookup);
+        Assert.Contains(events, e => e.Phase == WikidataProgressPhases.EntityFetch);
+        Assert.Contains(events, e => e.Phase == WikidataProgressPhases.Completed && e.CorrelationKey == "show");
+        Assert.Equal(1, resolved.Diagnostics.DistinctLookupCount);
+        Assert.Equal(1, resolved.Diagnostics.FetchedEntityCount);
+        Assert.Equal(WikidataProgressPhases.Completed, resolved.Diagnostics.CompletedPhase);
+    }
+
+    [Fact]
+    public void WikidataLibraryInfo_ExposesPackageVersion()
+    {
+        Assert.StartsWith("3.1.0", WikidataLibraryInfo.PackageVersion, StringComparison.Ordinal);
+        Assert.StartsWith("3.1.0", WikidataReconciler.LibraryVersion, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task ResolveBatchAsync_DeduplicatesDuplicateBridgeLookups()
     {
         var handler = new TestHttpMessageHandler((request, _) =>

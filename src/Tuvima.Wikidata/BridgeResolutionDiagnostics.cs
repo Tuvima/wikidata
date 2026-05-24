@@ -22,4 +22,12 @@ public sealed class BridgeResolutionDiagnostics
     public long RetryCount { get; init; }
 
     public long RateLimitResponses { get; init; }
+
+    public int DistinctLookupCount { get; init; }
+
+    public int FetchedEntityCount { get; init; }
+
+    public TimeSpan Elapsed { get; init; }
+
+    public string? CompletedPhase { get; init; }
 }

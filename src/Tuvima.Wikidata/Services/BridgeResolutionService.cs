@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Runtime.CompilerServices;
 using Tuvima.Wikidata.Internal;
 using Tuvima.Wikidata.Internal.Json;
 
@@ -73,8 +74,25 @@ public sealed class BridgeResolutionService
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(requests);
+
+        var results = new Dictionary<string, BridgeResolutionResult>(StringComparer.Ordinal);
+        await foreach (var result in ResolveBatchStreamAsync(requests, cancellationToken).ConfigureAwait(false))
+            results[result.CorrelationKey] = result;
+
+        return results;
+    }
+
+    /// <summary>
+    /// Resolves many bridge requests and yields one result per correlation key as soon
+    /// as the batched lookup/entity-prefetch phase has enough data to score that item.
+    /// </summary>
+    public async IAsyncEnumerable<BridgeResolutionResult> ResolveBatchStreamAsync(
+        IReadOnlyList<BridgeResolutionRequest> requests,
+        [EnumeratorCancellation] CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(requests);
         if (requests.Count == 0)
-            return new Dictionary<string, BridgeResolutionResult>(StringComparer.Ordinal);
+            yield break;
 
         var stopwatch = Stopwatch.StartNew();
         var before = _ctx.Diagnostics.GetSnapshot();
@@ -102,6 +120,19 @@ public sealed class BridgeResolutionService
             .Select(g => g.First())
             .ToList();
 
+        var completedItems = 0;
+        var completedWorkUnits = 0;
+        var totalWorkUnits = Math.Max(1, distinctLookups.Count + requests.Count);
+        ReportProgress(
+            WikidataProgressPhases.Planned,
+            correlationKey: null,
+            completedItems,
+            requests.Count,
+            completedWorkUnits,
+            totalWorkUnits,
+            stopwatch,
+            $"Planned {requests.Count} bridge resolution item(s) with {distinctLookups.Count} distinct lookup(s).");
+
         var lookupResults = new Dictionary<string, IReadOnlyList<string>>(StringComparer.OrdinalIgnoreCase);
         var lookupFailures = new Dictionary<string, WikidataProviderException>(StringComparer.OrdinalIgnoreCase);
 
@@ -109,6 +140,16 @@ public sealed class BridgeResolutionService
         {
             try
             {
+                ReportProgress(
+                    WikidataProgressPhases.ExternalIdLookup,
+                    correlationKey: null,
+                    completedItems,
+                    requests.Count,
+                    completedWorkUnits,
+                    totalWorkUnits,
+                    stopwatch,
+                    $"Looking up {lookup.PropertyId}:{lookup.NormalizedValue}.");
+
                 var qids = await _ctx.SearchClient
                     .SearchByExternalIdAsync(lookup.PropertyId, lookup.NormalizedValue, 20, cancellationToken)
                     .ConfigureAwait(false);
@@ -122,6 +163,19 @@ public sealed class BridgeResolutionService
             {
                 lookupFailures[lookup.LookupKey] = ex;
             }
+            finally
+            {
+                completedWorkUnits++;
+                ReportProgress(
+                    WikidataProgressPhases.ExternalIdLookup,
+                    correlationKey: null,
+                    completedItems,
+                    requests.Count,
+                    completedWorkUnits,
+                    totalWorkUnits,
+                    stopwatch,
+                    "Completed a bridge lookup.");
+            }
         }
 
         var allQids = lookupResults.Values
@@ -129,11 +183,38 @@ public sealed class BridgeResolutionService
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToList();
 
-        var result = new Dictionary<string, BridgeResolutionResult>(StringComparer.Ordinal);
+        totalWorkUnits = Math.Max(totalWorkUnits, distinctLookups.Count + allQids.Count + requests.Count);
+        foreach (var diagnostics in diagnosticsByKey.Values)
+        {
+            diagnostics.DistinctLookupCount = distinctLookups.Count;
+            diagnostics.FetchedEntityCount = allQids.Count;
+        }
+
+        ReportProgress(
+            WikidataProgressPhases.EntityFetch,
+            correlationKey: null,
+            completedItems,
+            requests.Count,
+            completedWorkUnits,
+            totalWorkUnits,
+            stopwatch,
+            $"Fetching {allQids.Count} candidate entity/entities.");
+
         var candidateEntitiesByLanguage = await FetchEntitiesByRequestLanguageAsync(
             allQids,
             requests,
             cancellationToken).ConfigureAwait(false);
+
+        completedWorkUnits += allQids.Count;
+        ReportProgress(
+            WikidataProgressPhases.EntityFetch,
+            correlationKey: null,
+            completedItems,
+            requests.Count,
+            completedWorkUnits,
+            totalWorkUnits,
+            stopwatch,
+            "Candidate entity fetch complete.");
 
         foreach (var request in requests)
         {
@@ -144,9 +225,20 @@ public sealed class BridgeResolutionService
                 ? byQid
                 : new Dictionary<string, WikidataEntityInfo>(StringComparer.OrdinalIgnoreCase);
 
+            BridgeResolutionResult resolved;
             try
             {
-                var resolved = await ResolveOneAsync(
+                ReportProgress(
+                    WikidataProgressPhases.Rollup,
+                    request.CorrelationKey,
+                    completedItems,
+                    requests.Count,
+                    completedWorkUnits,
+                    totalWorkUnits,
+                    stopwatch,
+                    "Scoring candidates and resolving rollup.");
+
+                resolved = await ResolveOneAsync(
                     request,
                     identifiers,
                     lookupResults,
@@ -156,7 +248,6 @@ public sealed class BridgeResolutionService
                     stopwatch,
                     before,
                     cancellationToken).ConfigureAwait(false);
-                result[request.CorrelationKey] = resolved;
             }
             catch (OperationCanceledException)
             {
@@ -164,7 +255,7 @@ public sealed class BridgeResolutionService
             }
             catch (WikidataProviderException ex)
             {
-                result[request.CorrelationKey] = BuildFailure(
+                resolved = BuildFailure(
                     request.CorrelationKey,
                     BridgeResolutionStatus.Failed,
                     ex.Kind,
@@ -173,9 +264,22 @@ public sealed class BridgeResolutionService
                     stopwatch.Elapsed,
                     before);
             }
-        }
 
-        return result;
+            completedItems++;
+            completedWorkUnits++;
+            ReportProgress(
+                resolved.Found ? WikidataProgressPhases.Completed : WikidataProgressPhases.Failed,
+                request.CorrelationKey,
+                completedItems,
+                requests.Count,
+                completedWorkUnits,
+                totalWorkUnits,
+                stopwatch,
+                resolved.Found ? "Bridge resolution completed." : resolved.FailureMessage,
+                resolved.FailureKind);
+
+            yield return resolved;
+        }
     }
 
     private async Task<BridgeResolutionResult> ResolveOneAsync(
@@ -230,6 +334,7 @@ public sealed class BridgeResolutionService
 
         if (bridgeCandidates.Count > 0)
         {
+            diagnostics.CompletedPhase = WikidataProgressPhases.Rollup;
             return await BuildResolvedResultAsync(
                 request,
                 bridgeCandidates,
@@ -258,6 +363,16 @@ public sealed class BridgeResolutionService
                 before);
         }
 
+        ReportProgress(
+            WikidataProgressPhases.TextFallback,
+            request.CorrelationKey,
+            completedItems: 0,
+            totalItems: 0,
+            completedWorkUnits: 0,
+            totalWorkUnits: 0,
+            stopwatch,
+            "Trying text fallback.");
+
         var fallback = await ResolveByTextFallbackAsync(
             request,
             diagnostics,
@@ -265,6 +380,7 @@ public sealed class BridgeResolutionService
 
         if (fallback.Count > 0)
         {
+            diagnostics.CompletedPhase = WikidataProgressPhases.TextFallback;
             return await BuildResolvedResultAsync(
                 request,
                 fallback,
@@ -277,6 +393,7 @@ public sealed class BridgeResolutionService
 
         if (failedLookup is not null)
         {
+            diagnostics.CompletedPhase = WikidataProgressPhases.Failed;
             return BuildFailure(
                 request.CorrelationKey,
                 BridgeResolutionStatus.Failed,
@@ -287,6 +404,7 @@ public sealed class BridgeResolutionService
                 before);
         }
 
+        diagnostics.CompletedPhase = WikidataProgressPhases.Failed;
         return BuildFailure(
             request.CorrelationKey,
             BridgeResolutionStatus.NotFound,
@@ -580,6 +698,7 @@ public sealed class BridgeResolutionService
         WikidataDiagnosticsSnapshot before,
         CancellationToken cancellationToken)
     {
+        diagnostics.CompletedPhase = WikidataProgressPhases.Completed;
         var selected = candidates[0];
         if (candidates.Count > 1 && Math.Abs(candidates[0].Confidence - candidates[1].Confidence) < 0.02)
             diagnostics.Warnings.Add("candidate.ambiguous");
@@ -615,6 +734,30 @@ public sealed class BridgeResolutionService
             Relationships = relationships,
             Diagnostics = diagnostics.Build(providerLatency, before, _ctx.Diagnostics.GetSnapshot())
         };
+    }
+
+    private void ReportProgress(
+        string phase,
+        string? correlationKey,
+        int completedItems,
+        int totalItems,
+        int completedWorkUnits,
+        int totalWorkUnits,
+        Stopwatch stopwatch,
+        string? message = null,
+        WikidataFailureKind? failureKind = null)
+    {
+        _ctx.Options.ProgressReporter?.Invoke(new WikidataProgressEvent(
+            WikidataProgressOperations.BridgeResolution,
+            phase,
+            correlationKey,
+            completedItems,
+            totalItems,
+            completedWorkUnits,
+            totalWorkUnits,
+            stopwatch.Elapsed,
+            message,
+            failureKind));
     }
 
     private async Task<WikidataEntityInfo?> FetchPublicEntityAsync(
@@ -1045,6 +1188,7 @@ public sealed class BridgeResolutionService
         WikidataDiagnosticsSnapshot? before = null)
     {
         var after = before ?? new WikidataDiagnosticsSnapshot();
+        diagnostics.CompletedPhase = WikidataProgressPhases.Failed;
         return new BridgeResolutionResult
         {
             CorrelationKey = correlationKey,
@@ -1063,6 +1207,9 @@ public sealed class BridgeResolutionService
         public List<string> MatchedProperties { get; } = [];
         public List<string> RejectedCandidates { get; } = [];
         public List<string> Warnings { get; } = [];
+        public int DistinctLookupCount { get; set; }
+        public int FetchedEntityCount { get; set; }
+        public string? CompletedPhase { get; set; }
 
         public BridgeResolutionDiagnostics Build(
             TimeSpan providerLatency,
@@ -1079,7 +1226,11 @@ public sealed class BridgeResolutionService
                 CacheHits = Math.Max(0, after.CacheHits - before.CacheHits),
                 CacheMisses = Math.Max(0, after.CacheMisses - before.CacheMisses),
                 RetryCount = Math.Max(0, after.RetryCount - before.RetryCount),
-                RateLimitResponses = Math.Max(0, after.RateLimitResponses - before.RateLimitResponses)
+                RateLimitResponses = Math.Max(0, after.RateLimitResponses - before.RateLimitResponses),
+                DistinctLookupCount = DistinctLookupCount,
+                FetchedEntityCount = FetchedEntityCount,
+                Elapsed = providerLatency,
+                CompletedPhase = CompletedPhase
             };
         }
     }

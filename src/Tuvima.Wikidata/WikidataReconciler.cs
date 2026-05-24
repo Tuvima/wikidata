@@ -50,6 +50,13 @@ public sealed class WikidataReconciler : IDisposable
     /// <summary>Shared HTTP/cache/throttle telemetry for all sub-services owned by this reconciler.</summary>
     public WikidataDiagnostics Diagnostics => _context.Diagnostics;
 
+    /// <summary>Package version for the loaded Tuvima.Wikidata library.</summary>
+    public static string LibraryVersion => WikidataLibraryInfo.PackageVersion;
+
+    /// <summary>Assembly version for the loaded Tuvima.Wikidata library.</summary>
+    public static Version? LibraryAssemblyVersion => WikidataLibraryInfo.AssemblyVersion;
+
+
     public WikidataReconciler()
         : this(new WikidataReconcilerOptions()) { }
 

@@ -160,6 +160,11 @@ public sealed class WikidataReconcilerOptions
     public Action<WikidataHttpLogEntry>? RequestLogger { get; init; }
 
     /// <summary>
+    /// Optional callback invoked by high-level batch operations to report item and phase progress.
+    /// </summary>
+    public Action<WikidataProgressEvent>? ProgressReporter { get; init; }
+
+    /// <summary>
     /// Maximum depth for P279 (subclass of) hierarchy walking during type checking.
     /// Default is 0 (direct P31 match only — fast, no extra API calls).
     /// Set to a positive value (e.g., 5) to walk superclasses and improve type recall.
