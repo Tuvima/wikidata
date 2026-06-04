@@ -8,7 +8,7 @@ Two NuGet packages:
 - `Tuvima.Wikidata` — core library, zero external dependencies
 - `Tuvima.Wikidata.AspNetCore` — W3C Reconciliation API middleware for ASP.NET Core
 
-## Architecture (v3.0.1)
+## Architecture (v3.2.0)
 
 `WikidataReconciler` is a thin **facade** that owns a shared `ReconcilerContext` (HttpClient, options, search/fetcher/scorer/type-checker collaborators, shared provider-safe HTTP pipeline, response cache hook, diagnostics, and per-host limiters) and exposes focused **sub-services** as properties:
 
@@ -21,8 +21,8 @@ WikidataReconciler (facade, owns ReconcilerContext)
 ├── Children     → ChildrenService         (generic TraverseChildrenAsync, ChildEntityManifest builder)
 ├── Authors      → AuthorsService          (multi-author split + pen-name resolution)
 ├── Labels       → LabelsService           (single + batch label lookup with fallback chain)
-├── Persons      → PersonsService          (role-aware person search with occupation filtering, year/work hints, group expansion)  [v2.1]
-|-- Bridge       -> BridgeResolutionService (bridge IDs, ranked candidates, canonical rollups, relationships, diagnostics)  [v3.0]
+├── Persons      → PersonsService          (role-aware person search/batch search with occupation filtering, year/work hints, group expansion)  [v3.2]
+|-- Bridge       -> BridgeResolutionService (bridge IDs, ordinal hints, ranked candidates, canonical rollups, relationships, diagnostics)  [v3.2]
 |-- Series       -> SeriesManifestService   (ordered series manifests, provenance, warnings)  [v3.0.1]
 
 Shared internals (Tuvima.Wikidata.Internal):
@@ -99,7 +99,7 @@ src/
 │   ├── ResolvedAuthor.cs                    # Per-author result: OriginalName, Qid, CanonicalName, RealNameQid (v2.4 Pattern 1), Pseudonyms (v2.3 Pattern 2), RealAuthors (v2.4 Pattern 3), Confidence
 │   ├── RealAuthor.cs                        # Lightweight real-author ref used in ResolvedAuthor.RealAuthors: Qid, CanonicalName (v2.4)
 │   ├── PersonRole.cs                        # Enum for Persons.SearchAsync: Author|Narrator|Director|Actor|VoiceActor|Composer|Performer|Artist|Screenwriter (v2.1)
-│   ├── PersonSearchRequest.cs               # Persons.SearchAsync input: Name, Role, TitleHint, WorkQid, IncludeMusicalGroups, BirthYearHint, DeathYearHint, CompanionNameHints, ExpandGroupMembers, AcceptThreshold (v2.1)
+│   ├── PersonSearchRequest.cs               # Persons.SearchAsync/SearchBatchAsync input: Name, Role, TitleHint, WorkQid, IncludeMusicalGroups, BirthYearHint, DeathYearHint, CompanionNameHints, ExpandGroupMembers, AcceptThreshold (v3.2)
 │   ├── PersonSearchResult.cs                # Persons.SearchAsync output: Found, Qid, CanonicalName, IsGroup, Score, Occupations, NotableWorks, GroupMembers (v2.1)
 │   ├── SeriesManifestRequest.cs             # Series manifest input: SeriesQid, language, collection expansion, caps (v3.0.1)
 │   ├── SeriesManifestResult.cs              # Ordered manifest output with items, warnings, completeness (v3.0.1)
@@ -125,7 +125,7 @@ src/
 │   │   ├── ChildrenService.cs               # TraverseChildrenAsync (generic) + GetChildEntitiesAsync (manifest)
 │   │   ├── AuthorsService.cs                # ResolveAsync — multi-author split + pen-name detection
 │   │   ├── LabelsService.cs                 # GetAsync, GetBatchAsync with language fallback
-│   │   ├── PersonsService.cs                # SearchAsync — role-aware person search (v2.1)
+│   │   ├── PersonsService.cs                # SearchAsync / SearchBatchAsync — role-aware person search (v3.2)
 │   │   ├── SeriesManifestService.cs         # GetManifestAsync ordered series manifests (v3.0.1)
 │   │   ├── BridgeResolutionService.cs       # ResolveAsync / ResolveBatchAsync high-level identity bridge (v3.0)
 │   ├── Graph/                               # Entity graph traversal module
@@ -266,6 +266,7 @@ New code should call sub-services via `reconciler.{Service}.{Method}(...)`. All 
 | Method | Purpose |
 |---|---|
 | `SearchAsync(PersonSearchRequest)` | **NEW.** Role-aware person search. Reconciles against Q5 (human) + optionally Q215380/Q5741069 (musical groups). Uses an internal `FrozenDictionary<PersonRole, string[]>` to map roles (`Author`, `Narrator`, `Director`, `Actor`, `VoiceActor`, `Composer`, `Performer`, `Artist`, `Screenwriter`) to canonical P106 occupation QIDs. `IncludeMusicalGroups` is `bool?` with per-role defaults (`Performer` and `Artist` default to true). `BirthYearHint`, `DeathYearHint`, and `WorkQid` feed property constraints; `TitleHint` now feeds the notable-work reranking path when explicit `CompanionNameHints` are absent. When `ExpandGroupMembers` is true and the hit is a group, populates `GroupMembers` from P527. |
+| `SearchBatchAsync(IReadOnlyList<PersonSearchRequest>)` | Batch person search that returns one result per input request in the same order and deduplicates identical lookups internally. |
 
 ### `reconciler.Bridge` — `BridgeResolutionService` (v3.0)
 
@@ -277,6 +278,7 @@ New code should call sub-services via `reconciler.{Service}.{Method}(...)`. All 
 Key design notes:
 - The public Stage2 compatibility layer was removed in v3.0. Use one request shape: `BridgeResolutionRequest`.
 - Built-in bridge catalog covers Apple, TMDB, IMDb, TVDB, ISBN, OpenLibrary, Google Books, MusicBrainz, ComicVine, Goodreads, ASIN, and custom caller-supplied property keys.
+- TV and comic ordinal hints (`SeasonNumber`, `EpisodeNumber`, `IssueNumber`) are scored when Wikidata exposes ordinal claims or qualifiers.
 - Results include selected/ranked candidates, typed success/failure, reason codes, warnings, provider diagnostics, canonical P629/P747 rollup path, series/order data, and relationship edges.
 - Tuvima.Wikidata does not call retail APIs; it only uses supplied bridge identifiers as Wikidata external-ID values.
 

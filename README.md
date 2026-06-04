@@ -40,7 +40,7 @@ This is the first .NET Wikidata reconciliation library, filling a gap in the eco
 | [`Tuvima.Wikidata`](https://www.nuget.org/packages/Tuvima.Wikidata) | Core library — reconciliation, entity data, Wikipedia content, graph traversal |
 | [`Tuvima.Wikidata.AspNetCore`](https://www.nuget.org/packages/Tuvima.Wikidata.AspNetCore) | ASP.NET Core middleware for hosting a W3C Reconciliation Service API |
 
-Current release: `3.0.1`
+Current release: `3.2.0`
 
 Current validation: 121 offline unit tests plus the live integration suite.
 
@@ -124,6 +124,25 @@ Tune scoring, language, type hierarchy, provider-safe host limits, response cach
 The reconciliation pipeline has four stages: dual search, entity fetching, weighted scoring, and type filtering.
 
 [Architecture overview](docs/architecture.md) — pipeline stages, internal components, design decisions
+
+## What's New in v3.2.0
+
+Additive ingestion-quality release.
+
+- **Ordinal-aware bridge scoring.** `BridgeResolutionService` now scores `SeasonNumber`, `EpisodeNumber`, and `IssueNumber` hints for TV seasons, TV episodes, and comic issues. Matching candidates receive reason codes such as `season.ordinal.match`, `episode.ordinal.match`, and `issue.ordinal.match`; mismatches are exposed as warnings.
+- **Person batch search.** `reconciler.Persons.SearchBatchAsync(...)` returns one `PersonSearchResult` per input request while deduplicating identical requests internally.
+
+```csharp
+var episode = await reconciler.Bridge.ResolveAsync(new BridgeResolutionRequest
+{
+    CorrelationKey = "episode-2",
+    MediaKind = BridgeMediaKind.TvEpisode,
+    BridgeIds = new Dictionary<string, string> { ["tvdb_episode_id"] = "12345" },
+    Title = "Pilot",
+    SeasonNumber = 1,
+    EpisodeNumber = 2
+});
+```
 
 ## What's New in v3.0.1
 
@@ -220,6 +239,8 @@ var results = await reconciler.Bridge.ResolveBatchAsync(requests);
 var selected = results["movie-42"].SelectedCandidate;
 ```
 
+Ordinal hints (`SeasonNumber`, `EpisodeNumber`, and `IssueNumber`) contribute to bridge candidate ranking for TV and comics when Wikidata exposes P1545/P4908/P433 ordinal data.
+
 ## What's New in v2.3.0
 
 Additive release closing out the library behavior gaps identified during v2.0–v2.2 integration testing.
@@ -258,6 +279,15 @@ if (result.Found && result.IsGroup)
 {
     Console.WriteLine($"Group {result.CanonicalName} has {result.GroupMembers?.Count ?? 0} members");
 }
+```
+
+For ingestion-style workloads, use `SearchBatchAsync(...)` to preserve input order while deduplicating identical lookups:
+
+```csharp
+var people = await reconciler.Persons.SearchBatchAsync([
+    new PersonSearchRequest { Name = "Stephen King", Role = PersonRole.Author },
+    new PersonSearchRequest { Name = "Stephen King", Role = PersonRole.Author }
+]);
 ```
 
 **Deferred to v2.2.0:** the Stage 2 resolver with discriminated `IStage2Request` hierarchy, edition pivoting, and bridge/music/text batch grouping.
