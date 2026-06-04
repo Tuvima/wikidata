@@ -67,8 +67,8 @@ public class BridgeResolutionServiceTests
     [Fact]
     public void WikidataLibraryInfo_ExposesPackageVersion()
     {
-        Assert.StartsWith("3.1.0", WikidataLibraryInfo.PackageVersion, StringComparison.Ordinal);
-        Assert.StartsWith("3.1.0", WikidataReconciler.LibraryVersion, StringComparison.Ordinal);
+        Assert.StartsWith("3.2.0", WikidataLibraryInfo.PackageVersion, StringComparison.Ordinal);
+        Assert.StartsWith("3.2.0", WikidataReconciler.LibraryVersion, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -170,6 +170,132 @@ public class BridgeResolutionServiceTests
         Assert.Equal("Q1", result.SelectedCandidate?.Qid);
         Assert.Equal("P345", result.SelectedCandidate?.MatchedPropertyId);
         Assert.Contains("type.match", result.SelectedCandidate?.ReasonCodes ?? []);
+    }
+
+    [Fact]
+    public async Task ResolveAsync_RanksTvSeasonBySeasonNumber()
+    {
+        var handler = new TestHttpMessageHandler((request, _) =>
+        {
+            var uri = Uri.UnescapeDataString(request.RequestUri!.ToString());
+
+            if (uri.Contains("haswbstatement:P6381=456", StringComparison.OrdinalIgnoreCase))
+                return Task.FromResult(TestHttpMessageHandler.Json(TestPayloads.QueryResponse("Q1", "Q2")));
+
+            if (uri.Contains("action=wbgetentities", StringComparison.OrdinalIgnoreCase))
+            {
+                return Task.FromResult(TestHttpMessageHandler.Json(TestPayloads.EntityResponse(
+                    TestPayloads.Entity("Q1", "Show season 1", claims: TestPayloads.Claims(
+                        ("P31", "wikibase-item", TestPayloads.ItemDataValue("Q3464665"), "normal"),
+                        ("P6381", "external-id", TestPayloads.StringDataValue("456"), "normal"),
+                        ("P4908", "string", TestPayloads.StringDataValue("1"), "normal"))),
+                    TestPayloads.Entity("Q2", "Show season 2", claims: TestPayloads.Claims(
+                        ("P31", "wikibase-item", TestPayloads.ItemDataValue("Q3464665"), "normal"),
+                        ("P6381", "external-id", TestPayloads.StringDataValue("456"), "normal"),
+                        ("P4908", "string", TestPayloads.StringDataValue("2"), "normal"))))));
+            }
+
+            throw new InvalidOperationException($"Unexpected request: {uri}");
+        });
+
+        using var reconciler = TestPayloads.CreateReconciler(handler);
+
+        var result = await reconciler.Bridge.ResolveAsync(new BridgeResolutionRequest
+        {
+            CorrelationKey = "season",
+            MediaKind = BridgeMediaKind.TvSeason,
+            SeasonNumber = 2,
+            BridgeIds = new Dictionary<string, string> { ["itunes_tv_season_id"] = "456" }
+        });
+
+        Assert.True(result.Found);
+        Assert.Equal("Q2", result.SelectedCandidate?.Qid);
+        Assert.Contains("season.ordinal.match", result.SelectedCandidate?.ReasonCodes ?? []);
+        Assert.Contains("season.ordinal.mismatch", result.Candidates[1].Warnings);
+    }
+
+    [Fact]
+    public async Task ResolveAsync_RanksTvEpisodeByEpisodeNumber()
+    {
+        var handler = new TestHttpMessageHandler((request, _) =>
+        {
+            var uri = Uri.UnescapeDataString(request.RequestUri!.ToString());
+
+            if (uri.Contains("haswbstatement:P7043=123", StringComparison.OrdinalIgnoreCase))
+                return Task.FromResult(TestHttpMessageHandler.Json(TestPayloads.QueryResponse("Q1", "Q2")));
+
+            if (uri.Contains("action=wbgetentities", StringComparison.OrdinalIgnoreCase))
+            {
+                return Task.FromResult(TestHttpMessageHandler.Json(TestPayloads.EntityResponse(
+                    TestPayloads.Entity("Q1", "Episode 1", claims: TestPayloads.Claims(
+                        ("P31", "wikibase-item", TestPayloads.ItemDataValue("Q21191270"), "normal"),
+                        ("P7043", "external-id", TestPayloads.StringDataValue("123"), "normal"),
+                        ("P1545", "string", TestPayloads.StringDataValue("1"), "normal"))),
+                    TestPayloads.Entity("Q2", "Episode 2", claims: TestPayloads.Claims(
+                        ("P31", "wikibase-item", TestPayloads.ItemDataValue("Q21191270"), "normal"),
+                        ("P7043", "external-id", TestPayloads.StringDataValue("123"), "normal"),
+                        ("P1545", "string", TestPayloads.StringDataValue("2"), "normal"))))));
+            }
+
+            throw new InvalidOperationException($"Unexpected request: {uri}");
+        });
+
+        using var reconciler = TestPayloads.CreateReconciler(handler);
+
+        var result = await reconciler.Bridge.ResolveAsync(new BridgeResolutionRequest
+        {
+            CorrelationKey = "episode",
+            MediaKind = BridgeMediaKind.TvEpisode,
+            EpisodeNumber = 2,
+            BridgeIds = new Dictionary<string, string> { ["tvdb_episode_id"] = "123" }
+        });
+
+        Assert.True(result.Found);
+        Assert.Equal("Q2", result.SelectedCandidate?.Qid);
+        Assert.Contains("episode.ordinal.match", result.SelectedCandidate?.ReasonCodes ?? []);
+        Assert.Contains("episode.ordinal.mismatch", result.Candidates[1].Warnings);
+    }
+
+    [Fact]
+    public async Task ResolveAsync_RanksComicIssueByIssueNumber()
+    {
+        var handler = new TestHttpMessageHandler((request, _) =>
+        {
+            var uri = Uri.UnescapeDataString(request.RequestUri!.ToString());
+
+            if (uri.Contains("haswbstatement:P5905=789", StringComparison.OrdinalIgnoreCase))
+                return Task.FromResult(TestHttpMessageHandler.Json(TestPayloads.QueryResponse("Q1", "Q2")));
+
+            if (uri.Contains("action=wbgetentities", StringComparison.OrdinalIgnoreCase))
+            {
+                return Task.FromResult(TestHttpMessageHandler.Json(TestPayloads.EntityResponse(
+                    TestPayloads.Entity("Q1", "Comic issue 11", claims: TestPayloads.Claims(
+                        ("P31", "wikibase-item", TestPayloads.ItemDataValue("Q1114461"), "normal"),
+                        ("P5905", "external-id", TestPayloads.StringDataValue("789"), "normal"),
+                        ("P433", "string", TestPayloads.StringDataValue("11"), "normal"))),
+                    TestPayloads.Entity("Q2", "Comic issue 12", claims: TestPayloads.Claims(
+                        ("P31", "wikibase-item", TestPayloads.ItemDataValue("Q1114461"), "normal"),
+                        ("P5905", "external-id", TestPayloads.StringDataValue("789"), "normal"),
+                        ("P433", "string", TestPayloads.StringDataValue("12"), "normal"))))));
+            }
+
+            throw new InvalidOperationException($"Unexpected request: {uri}");
+        });
+
+        using var reconciler = TestPayloads.CreateReconciler(handler);
+
+        var result = await reconciler.Bridge.ResolveAsync(new BridgeResolutionRequest
+        {
+            CorrelationKey = "comic",
+            MediaKind = BridgeMediaKind.ComicIssue,
+            IssueNumber = "12",
+            BridgeIds = new Dictionary<string, string> { ["comicvine_id"] = "789" }
+        });
+
+        Assert.True(result.Found);
+        Assert.Equal("Q2", result.SelectedCandidate?.Qid);
+        Assert.Contains("issue.ordinal.match", result.SelectedCandidate?.ReasonCodes ?? []);
+        Assert.Contains("issue.ordinal.mismatch", result.Candidates[1].Warnings);
     }
 
     [Fact]

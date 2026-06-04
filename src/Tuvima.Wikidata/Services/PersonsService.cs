@@ -159,6 +159,39 @@ public sealed class PersonsService
         };
     }
 
+    /// <summary>
+    /// Searches for multiple persons and returns one result per input request in
+    /// the same order. Duplicate requests share one underlying lookup.
+    /// </summary>
+    public async Task<IReadOnlyList<PersonSearchResult>> SearchBatchAsync(
+        IReadOnlyList<PersonSearchRequest> requests,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(requests);
+        if (requests.Count == 0)
+            return [];
+
+        var resultsByKey = new Dictionary<string, PersonSearchResult>(StringComparer.Ordinal);
+        var requestKeys = new string[requests.Count];
+
+        for (var i = 0; i < requests.Count; i++)
+        {
+            var request = requests[i];
+            ArgumentException.ThrowIfNullOrWhiteSpace(request.Name);
+
+            var key = BuildBatchKey(request);
+            requestKeys[i] = key;
+
+            if (resultsByKey.ContainsKey(key))
+                continue;
+
+            cancellationToken.ThrowIfCancellationRequested();
+            resultsByKey[key] = await SearchAsync(request, cancellationToken).ConfigureAwait(false);
+        }
+
+        return requestKeys.Select(key => resultsByKey[key]).ToList();
+    }
+
     private static List<PropertyConstraint> BuildConstraints(PersonSearchRequest request, bool includeGroups)
     {
         var constraints = new List<PropertyConstraint>();
@@ -193,6 +226,31 @@ public sealed class PersonsService
 
         return constraints;
     }
+
+    private static string BuildBatchKey(PersonSearchRequest request)
+    {
+        var companions = request.CompanionNameHints is { Count: > 0 }
+            ? string.Join("\u001f", request.CompanionNameHints.Select(NormalizeBatchKeyPart))
+            : string.Empty;
+
+        return string.Join("\u001e",
+        [
+            NormalizeBatchKeyPart(request.Name),
+            request.Role.ToString(),
+            NormalizeBatchKeyPart(request.TitleHint),
+            NormalizeBatchKeyPart(request.WorkQid),
+            request.IncludeMusicalGroups?.ToString() ?? "",
+            request.BirthYearHint?.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? "",
+            request.DeathYearHint?.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? "",
+            request.ExpandGroupMembers.ToString(),
+            NormalizeBatchKeyPart(request.Language),
+            request.AcceptThreshold.ToString("R", System.Globalization.CultureInfo.InvariantCulture),
+            companions
+        ]);
+    }
+
+    private static string NormalizeBatchKeyPart(string? value)
+        => string.IsNullOrWhiteSpace(value) ? string.Empty : value.Trim().ToLowerInvariant();
 
     /// <summary>
     /// Re-ranks the top reconciliation candidates by how well their P800 (notable work) labels

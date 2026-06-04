@@ -1,5 +1,13 @@
 # Changelog
 
+## v3.2.0
+
+Additive release improving ingestion-oriented bridge and person matching.
+
+- `BridgeResolutionService` now scores `SeasonNumber`, `EpisodeNumber`, and `IssueNumber` hints for TV seasons, TV episodes, and comic issues.
+- Bridge candidates now expose ordinal reason codes such as `season.ordinal.match`, `episode.ordinal.match`, and `issue.ordinal.match`, plus mismatch/missing warnings.
+- Added `PersonsService.SearchBatchAsync(...)`, which returns one `PersonSearchResult` per input request and deduplicates identical lookups internally.
+
 ## v3.0.3
 
 Patch release improving direct Wikidata identity lookup.

@@ -569,8 +569,9 @@ public sealed class BridgeResolutionService
             strongScore: 0.04,
             partialScore: 0.02);
         var yearScore = ScoreYear(request.Year, entity, reasonCodes);
+        var ordinalScore = ScoreOrdinalHints(request, entity, reasonCodes, warnings);
         var bridgeScore = Math.Min(0.74 + (matches.Count - 1) * 0.03, 0.82);
-        var confidence = Math.Clamp(bridgeScore + typeScore + titleScore + creatorScore + seriesScore + yearScore, 0, 1);
+        var confidence = Math.Clamp(bridgeScore + typeScore + titleScore + creatorScore + seriesScore + yearScore + ordinalScore, 0, 1);
         var firstMatch = matches[0];
         var collected = CollectKnownBridgeIds(entity, request, matches);
 
@@ -662,6 +663,7 @@ public sealed class BridgeResolutionService
                     strongScore: 0.04,
                     partialScore: 0.02);
                 score += ScoreYear(request.Year, entity, reasonCodes);
+                score += ScoreOrdinalHints(request, entity, reasonCodes, warnings);
 
                 candidates.Add(new BridgeCandidate
                 {
@@ -1057,6 +1059,181 @@ public sealed class BridgeResolutionService
         }
 
         return 0;
+    }
+
+    private static double ScoreOrdinalHints(
+        BridgeResolutionRequest request,
+        WikidataEntityInfo entity,
+        List<string> reasonCodes,
+        List<string> warnings)
+    {
+        return request.MediaKind switch
+        {
+            BridgeMediaKind.TvSeason => ScoreOrdinalHint(
+                request.SeasonNumber,
+                entity,
+                "season",
+                directProperties: ["P4908", "P1545"],
+                qualifierProperties: ["P1545", "P4908"],
+                reasonCodes,
+                warnings,
+                matchScore: 0.06,
+                mismatchScore: -0.04),
+
+            BridgeMediaKind.TvEpisode => ScoreOrdinalHint(
+                    request.EpisodeNumber,
+                    entity,
+                    "episode",
+                    directProperties: ["P1545"],
+                    qualifierProperties: ["P1545"],
+                    reasonCodes,
+                    warnings,
+                    matchScore: 0.06,
+                    mismatchScore: -0.04)
+                + ScoreOrdinalHint(
+                    request.SeasonNumber,
+                    entity,
+                    "season",
+                    directProperties: ["P4908"],
+                    qualifierProperties: ["P4908"],
+                    reasonCodes,
+                    warnings,
+                    matchScore: 0.03,
+                    mismatchScore: -0.02),
+
+            BridgeMediaKind.ComicIssue => ScoreOrdinalHint(
+                request.IssueNumber,
+                entity,
+                "issue",
+                directProperties: ["P433", "P1545"],
+                qualifierProperties: ["P1545"],
+                reasonCodes,
+                warnings,
+                matchScore: 0.06,
+                mismatchScore: -0.04),
+
+            _ => 0
+        };
+    }
+
+    private static double ScoreOrdinalHint(
+        object? hint,
+        WikidataEntityInfo entity,
+        string reasonPrefix,
+        IReadOnlyList<string> directProperties,
+        IReadOnlyList<string> qualifierProperties,
+        List<string> reasonCodes,
+        List<string> warnings,
+        double matchScore,
+        double mismatchScore)
+    {
+        var normalizedHint = NormalizeOrdinal(hint);
+        if (string.IsNullOrWhiteSpace(normalizedHint))
+            return 0;
+
+        var ordinals = CollectOrdinalValues(entity, directProperties, qualifierProperties)
+            .Select(NormalizeOrdinal)
+            .Where(value => !string.IsNullOrWhiteSpace(value))
+            .Select(value => value!)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        if (ordinals.Count == 0)
+        {
+            warnings.Add($"{reasonPrefix}.ordinal.missing");
+            return 0;
+        }
+
+        if (ordinals.Any(value => OrdinalEquals(value, normalizedHint)))
+        {
+            reasonCodes.Add($"{reasonPrefix}.ordinal.match");
+            return matchScore;
+        }
+
+        warnings.Add($"{reasonPrefix}.ordinal.mismatch");
+        return mismatchScore;
+    }
+
+    private static List<string> CollectOrdinalValues(
+        WikidataEntityInfo entity,
+        IReadOnlyList<string> directProperties,
+        IReadOnlyList<string> qualifierProperties)
+    {
+        var values = new List<string>();
+
+        foreach (var propertyId in directProperties)
+        {
+            if (!entity.Claims.TryGetValue(propertyId, out var claims))
+                continue;
+
+            foreach (var claim in claims)
+            {
+                if (!string.IsNullOrWhiteSpace(claim.Value?.RawValue))
+                    values.Add(claim.Value.RawValue);
+            }
+        }
+
+        foreach (var claims in entity.Claims.Values)
+        {
+            foreach (var claim in claims)
+            {
+                foreach (var propertyId in qualifierProperties)
+                {
+                    if (!claim.Qualifiers.TryGetValue(propertyId, out var qualifierValues))
+                        continue;
+
+                    foreach (var value in qualifierValues)
+                    {
+                        if (!string.IsNullOrWhiteSpace(value.RawValue))
+                            values.Add(value.RawValue);
+                    }
+                }
+            }
+        }
+
+        return values;
+    }
+
+    private static string? NormalizeOrdinal(object? value)
+    {
+        if (value is null)
+            return null;
+
+        var text = value switch
+        {
+            int i => i.ToString(System.Globalization.CultureInfo.InvariantCulture),
+            long l => l.ToString(System.Globalization.CultureInfo.InvariantCulture),
+            short s => s.ToString(System.Globalization.CultureInfo.InvariantCulture),
+            byte b => b.ToString(System.Globalization.CultureInfo.InvariantCulture),
+            _ => value.ToString()
+        };
+
+        if (string.IsNullOrWhiteSpace(text))
+            return null;
+
+        var compact = new string(text
+            .Trim()
+            .Where(char.IsLetterOrDigit)
+            .ToArray())
+            .ToLowerInvariant();
+
+        if (string.IsNullOrWhiteSpace(compact))
+            return null;
+
+        return compact.All(char.IsDigit)
+            && long.TryParse(compact, out var numeric)
+                ? numeric.ToString(System.Globalization.CultureInfo.InvariantCulture)
+                : compact;
+    }
+
+    private static bool OrdinalEquals(string candidate, string hint)
+    {
+        if (string.Equals(candidate, hint, StringComparison.OrdinalIgnoreCase))
+            return true;
+
+        return long.TryParse(candidate, out var candidateNumber)
+            && long.TryParse(hint, out var hintNumber)
+            && candidateNumber == hintNumber;
     }
 
     private static bool ClaimHasValue(WikidataEntityInfo entity, string propertyId, string normalizedValue)

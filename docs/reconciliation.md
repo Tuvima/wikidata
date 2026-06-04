@@ -255,6 +255,8 @@ Console.WriteLine(result.CanonicalWorkQid);
 
 Bridge results include ranked candidates, reason codes, warnings, typed failures, rollup path, series/order metadata, relationship edges, and provider diagnostics.
 
+For TV and comics, pass ordinal hints when available. `SeasonNumber`, `EpisodeNumber`, and `IssueNumber` are scored against Wikidata ordinal claims and qualifiers, and matching/mismatching evidence is exposed in candidate reason codes and warnings.
+
 ## Direct QID Lookup
 
 If you already have a QID:
@@ -288,6 +290,15 @@ if (result.Found)
 ```
 
 If `CompanionNameHints` is empty, `TitleHint` now feeds the same notable-work re-ranking path.
+
+For bulk ingestion, `SearchBatchAsync(...)` preserves input order and deduplicates identical requests:
+
+```csharp
+var results = await reconciler.Persons.SearchBatchAsync([
+    new PersonSearchRequest { Name = "Stephen King", Role = PersonRole.Author },
+    new PersonSearchRequest { Name = "Stephen King", Role = PersonRole.Author }
+]);
+```
 
 ## Result Object
 

@@ -257,6 +257,75 @@ public class BehaviorFeaturesTests
     }
 
     [Fact]
+    public async Task PersonsService_SearchBatchAsync_DeduplicatesAndKeepsInputOrder()
+    {
+        var handler = new TestHttpMessageHandler((request, _) =>
+        {
+            var uri = Uri.UnescapeDataString(request.RequestUri!.ToString());
+
+            if (uri.Contains("action=wbsearchentities", StringComparison.OrdinalIgnoreCase) &&
+                uri.Contains("Alex Author", StringComparison.OrdinalIgnoreCase))
+            {
+                return Task.FromResult(TestHttpMessageHandler.Json(
+                    TestPayloads.SearchResponse(("Q1", "Alex Author"))));
+            }
+
+            if (uri.Contains("action=query&list=search", StringComparison.OrdinalIgnoreCase) &&
+                uri.Contains("Alex Author", StringComparison.OrdinalIgnoreCase))
+            {
+                return Task.FromResult(TestHttpMessageHandler.Json(
+                    TestPayloads.QueryResponse("Q1")));
+            }
+
+            if (uri.Contains("action=wbsearchentities", StringComparison.OrdinalIgnoreCase) &&
+                uri.Contains("Blake Author", StringComparison.OrdinalIgnoreCase))
+            {
+                return Task.FromResult(TestHttpMessageHandler.Json(
+                    TestPayloads.SearchResponse(("Q2", "Blake Author"))));
+            }
+
+            if (uri.Contains("action=query&list=search", StringComparison.OrdinalIgnoreCase) &&
+                uri.Contains("Blake Author", StringComparison.OrdinalIgnoreCase))
+            {
+                return Task.FromResult(TestHttpMessageHandler.Json(
+                    TestPayloads.QueryResponse("Q2")));
+            }
+
+            if (uri.Contains("action=wbgetentities", StringComparison.OrdinalIgnoreCase) &&
+                uri.Contains("ids=Q1", StringComparison.OrdinalIgnoreCase))
+            {
+                return Task.FromResult(TestHttpMessageHandler.Json(EntityResponse(
+                    TestPayloads.Entity("Q1", "Alex Author", claims: TestPayloads.Claims(
+                        ("P31", "wikibase-item", TestPayloads.ItemDataValue("Q5"), "normal"),
+                        ("P106", "wikibase-item", TestPayloads.ItemDataValue("Q36180"), "normal"))))));
+            }
+
+            if (uri.Contains("action=wbgetentities", StringComparison.OrdinalIgnoreCase) &&
+                uri.Contains("ids=Q2", StringComparison.OrdinalIgnoreCase))
+            {
+                return Task.FromResult(TestHttpMessageHandler.Json(EntityResponse(
+                    TestPayloads.Entity("Q2", "Blake Author", claims: TestPayloads.Claims(
+                        ("P31", "wikibase-item", TestPayloads.ItemDataValue("Q5"), "normal"),
+                        ("P106", "wikibase-item", TestPayloads.ItemDataValue("Q36180"), "normal"))))));
+            }
+
+            throw new InvalidOperationException($"Unexpected request: {uri}");
+        });
+
+        using var reconciler = TestPayloads.CreateReconciler(handler);
+
+        var results = await reconciler.Persons.SearchBatchAsync([
+            new PersonSearchRequest { Name = "Alex Author", Role = PersonRole.Author },
+            new PersonSearchRequest { Name = "Blake Author", Role = PersonRole.Author },
+            new PersonSearchRequest { Name = "Alex Author", Role = PersonRole.Author }
+        ]);
+
+        Assert.Equal(["Q1", "Q2", "Q1"], results.Select(result => result.Qid ?? "").ToArray());
+        Assert.Equal(2, handler.RequestedUris.Count(uri =>
+            Uri.UnescapeDataString(uri).Contains("action=wbsearchentities", StringComparison.OrdinalIgnoreCase)));
+    }
+
+    [Fact]
     public async Task ChildrenService_CustomOrdinalProperty_DrivesOrdering()
     {
         var handler = new TestHttpMessageHandler((request, _) =>
