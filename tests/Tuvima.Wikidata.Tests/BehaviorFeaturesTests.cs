@@ -326,6 +326,82 @@ public class BehaviorFeaturesTests
     }
 
     [Fact]
+    public async Task PersonsService_SearchBatchAsync_RunsUniqueLookupsInBoundedParallel()
+    {
+        var activeSearches = 0;
+        var maxActiveSearches = 0;
+
+        var handler = new TestHttpMessageHandler(async (request, ct) =>
+        {
+            var uri = Uri.UnescapeDataString(request.RequestUri!.ToString());
+
+            if (uri.Contains("action=wbsearchentities", StringComparison.OrdinalIgnoreCase) &&
+                (uri.Contains("Concurrent One", StringComparison.OrdinalIgnoreCase) ||
+                 uri.Contains("Concurrent Two", StringComparison.OrdinalIgnoreCase)))
+            {
+                var active = Interlocked.Increment(ref activeSearches);
+                maxActiveSearches = Math.Max(maxActiveSearches, active);
+                try
+                {
+                    await Task.Delay(100, ct);
+                    var qid = uri.Contains("Concurrent One", StringComparison.OrdinalIgnoreCase) ? "Q10" : "Q20";
+                    var label = uri.Contains("Concurrent One", StringComparison.OrdinalIgnoreCase)
+                        ? "Concurrent One"
+                        : "Concurrent Two";
+                    return TestHttpMessageHandler.Json(TestPayloads.SearchResponse((qid, label)));
+                }
+                finally
+                {
+                    Interlocked.Decrement(ref activeSearches);
+                }
+            }
+
+            if (uri.Contains("action=query&list=search", StringComparison.OrdinalIgnoreCase) &&
+                uri.Contains("Concurrent One", StringComparison.OrdinalIgnoreCase))
+            {
+                return TestHttpMessageHandler.Json(TestPayloads.QueryResponse("Q10"));
+            }
+
+            if (uri.Contains("action=query&list=search", StringComparison.OrdinalIgnoreCase) &&
+                uri.Contains("Concurrent Two", StringComparison.OrdinalIgnoreCase))
+            {
+                return TestHttpMessageHandler.Json(TestPayloads.QueryResponse("Q20"));
+            }
+
+            if (uri.Contains("action=wbgetentities", StringComparison.OrdinalIgnoreCase) &&
+                uri.Contains("ids=Q10", StringComparison.OrdinalIgnoreCase))
+            {
+                return TestHttpMessageHandler.Json(EntityResponse(
+                    TestPayloads.Entity("Q10", "Concurrent One", claims: TestPayloads.Claims(
+                        ("P31", "wikibase-item", TestPayloads.ItemDataValue("Q5"), "normal")))));
+            }
+
+            if (uri.Contains("action=wbgetentities", StringComparison.OrdinalIgnoreCase) &&
+                uri.Contains("ids=Q20", StringComparison.OrdinalIgnoreCase))
+            {
+                return TestHttpMessageHandler.Json(EntityResponse(
+                    TestPayloads.Entity("Q20", "Concurrent Two", claims: TestPayloads.Claims(
+                        ("P31", "wikibase-item", TestPayloads.ItemDataValue("Q5"), "normal")))));
+            }
+
+            throw new InvalidOperationException($"Unexpected request: {uri}");
+        });
+
+        using var reconciler = TestPayloads.CreateReconciler(handler);
+
+        var results = await reconciler.Persons.SearchBatchAsync([
+            new PersonSearchRequest { Name = "Concurrent One", Role = PersonRole.Author },
+            new PersonSearchRequest { Name = "Concurrent Two", Role = PersonRole.Author },
+            new PersonSearchRequest { Name = "Concurrent One", Role = PersonRole.Author }
+        ]);
+
+        Assert.Equal(["Q10", "Q20", "Q10"], results.Select(result => result.Qid ?? "").ToArray());
+        Assert.True(maxActiveSearches >= 2);
+        Assert.Equal(2, handler.RequestedUris.Count(uri =>
+            Uri.UnescapeDataString(uri).Contains("action=wbsearchentities", StringComparison.OrdinalIgnoreCase)));
+    }
+
+    [Fact]
     public async Task ChildrenService_CustomOrdinalProperty_DrivesOrdering()
     {
         var handler = new TestHttpMessageHandler((request, _) =>

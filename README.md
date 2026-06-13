@@ -42,7 +42,17 @@ This is the first .NET Wikidata reconciliation library, filling a gap in the eco
 
 Current release: `3.2.0`
 
-Current validation: 121 offline unit tests plus the live integration suite.
+Current validation: 121 offline unit tests plus 77 live integration tests.
+
+## Version Details
+
+| Version | Type | Notes |
+|---|---|---|
+| `3.2.0` | Current release | Adds ordinal-aware bridge scoring for TV/comic ingestion and `PersonsService.SearchBatchAsync(...)`. |
+| `3.0.3` | Patch | Exact QID reconciliation now uses direct `wbgetentities` lookup while still honoring type and exclusion constraints. |
+| `3.0.2` | Patch | Series manifests now discover incoming P8345 franchise members for franchise-modeled series. |
+| `3.0.1` | Patch | Adds `reconciler.Series.GetManifestAsync(...)` for ordered series manifests. |
+| `3.0.0` | Breaking | Replaces the public Stage2 API with `reconciler.Bridge` and `BridgeResolutionRequest` / `BridgeResolutionResult`. |
 
 ## Installation
 
@@ -121,6 +131,8 @@ Tune scoring, language, type hierarchy, provider-safe host limits, response cach
 
 ## Architecture
 
+`WikidataReconciler` is a facade over focused sub-services: `Reconcile`, `Entities`, `Wikipedia`, `Editions`, `Children`, `Authors`, `Labels`, `Persons`, `Bridge`, and `Series`. All sub-services share the same `HttpClient`, options, provider-safe HTTP pipeline, response cache hook, diagnostics, and per-host rate limiters.
+
 The reconciliation pipeline has four stages: dual search, entity fetching, weighted scoring, and type filtering.
 
 [Architecture overview](docs/architecture.md) — pipeline stages, internal components, design decisions
@@ -143,6 +155,20 @@ var episode = await reconciler.Bridge.ResolveAsync(new BridgeResolutionRequest
     EpisodeNumber = 2
 });
 ```
+
+## What's New in v3.0.3
+
+Patch release improving direct Wikidata identity lookup.
+
+- **Exact QID reconciliation.** Requests such as `Q155653` now fetch the entity directly with `wbgetentities` instead of sending the QID through text search.
+- **Constraint-safe direct lookup.** Direct QID reconciliation still honors requested type and exclusion constraints, so identity lookups remain deterministic without bypassing media-kind safety checks.
+
+## What's New in v3.0.2
+
+Patch release improving film-franchise manifest discovery.
+
+- **Incoming P8345 franchise discovery.** Series manifests now discover items that point to the requested series or franchise through P8345.
+- **Better franchise manifests.** Film franchises such as Blade Runner can produce ordered manifests when Wikidata models the group as a franchise instead of a P179 series.
 
 ## What's New in v3.0.1
 
