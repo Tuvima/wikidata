@@ -171,7 +171,7 @@ public sealed class PersonsService
         if (requests.Count == 0)
             return [];
 
-        var resultsByKey = new Dictionary<string, PersonSearchResult>(StringComparer.Ordinal);
+        var uniqueRequestsByKey = new Dictionary<string, PersonSearchRequest>(StringComparer.Ordinal);
         var requestKeys = new string[requests.Count];
 
         for (var i = 0; i < requests.Count; i++)
@@ -182,12 +182,37 @@ public sealed class PersonsService
             var key = BuildBatchKey(request);
             requestKeys[i] = key;
 
-            if (resultsByKey.ContainsKey(key))
-                continue;
-
-            cancellationToken.ThrowIfCancellationRequested();
-            resultsByKey[key] = await SearchAsync(request, cancellationToken).ConfigureAwait(false);
+            uniqueRequestsByKey.TryAdd(key, request);
         }
+
+        var uniqueRequests = uniqueRequestsByKey.ToArray();
+        var maxConcurrency = Math.Min(
+            3,
+            Math.Max(1, _ctx.Options.WikidataRateLimit.MaxConcurrentRequests));
+
+        using var gate = new SemaphoreSlim(
+            Math.Min(uniqueRequests.Length, maxConcurrency),
+            Math.Min(uniqueRequests.Length, maxConcurrency));
+
+        var lookupTasks = uniqueRequests.Select(async pair =>
+        {
+            await gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+            try
+            {
+                var result = await SearchAsync(pair.Value, cancellationToken).ConfigureAwait(false);
+                return (pair.Key, Result: result);
+            }
+            finally
+            {
+                gate.Release();
+            }
+        }).ToArray();
+
+        var lookups = await Task.WhenAll(lookupTasks).ConfigureAwait(false);
+        var resultsByKey = lookups.ToDictionary(
+            item => item.Key,
+            item => item.Result,
+            StringComparer.Ordinal);
 
         return requestKeys.Select(key => resultsByKey[key]).ToList();
     }

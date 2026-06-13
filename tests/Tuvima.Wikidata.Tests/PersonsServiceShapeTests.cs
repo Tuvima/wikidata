@@ -51,6 +51,23 @@ public class PersonsServiceShapeTests
     }
 
     [Fact]
+    public async Task SearchBatchAsync_EmptyName_ThrowsBeforeNetwork()
+    {
+        var handler = new TestHttpMessageHandler((_, _) =>
+            throw new InvalidOperationException("Batch validation should run before network access."));
+
+        using var reconciler = TestPayloads.CreateReconciler(handler);
+
+        await Assert.ThrowsAsync<ArgumentException>(async () =>
+            await reconciler.Persons.SearchBatchAsync([
+                new PersonSearchRequest { Name = "Valid Person", Role = PersonRole.Author },
+                new PersonSearchRequest { Name = "   ", Role = PersonRole.Author }
+            ]));
+
+        Assert.Empty(handler.RequestedUris);
+    }
+
+    [Fact]
     public void PersonSearchResult_DefaultShape_IsNotFound()
     {
         var result = new PersonSearchResult();

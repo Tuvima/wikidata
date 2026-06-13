@@ -151,7 +151,7 @@ public class IntegrationTests : IDisposable
     [Fact]
     public async Task SuggestAsync_ShouldReturnResults()
     {
-        var results = await _reconciler.SuggestAsync("Douglas");
+        var results = await _reconciler.SuggestAsync("Douglas Adams");
 
         Assert.NotEmpty(results);
         Assert.Contains(results, r => r.Id == "Q42");
