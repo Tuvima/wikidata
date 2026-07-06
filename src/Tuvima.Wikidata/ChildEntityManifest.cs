@@ -23,6 +23,12 @@ public sealed class ChildEntityManifest
     public int TotalCount { get; init; }
 
     /// <summary>
+    /// Count facts that may describe expected totals even when the current
+    /// Wikidata traversal does not expose every child as a concrete row.
+    /// </summary>
+    public IReadOnlyList<ManifestCountFact> ExpectedCounts { get; init; } = [];
+
+    /// <summary>
     /// The children themselves, in traversal order (sorted by ordinal then release date).
     /// </summary>
     public IReadOnlyList<ChildEntityRef> Children { get; init; } = [];

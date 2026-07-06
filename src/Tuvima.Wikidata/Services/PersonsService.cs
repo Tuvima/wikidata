@@ -14,6 +14,7 @@ public sealed class PersonsService
     private const string HumanType = "Q5";
     private const string MusicalGroupType = "Q215380";
     private const string MusicalEnsembleType = "Q5741069";
+    private const int MaxBatchConcurrency = 4;
 
     // Maps each role to the P106 (occupation) QIDs that best match it.
     // When Role == Unknown, no occupation filter is applied.

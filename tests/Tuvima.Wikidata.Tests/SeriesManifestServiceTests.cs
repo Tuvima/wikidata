@@ -45,12 +45,12 @@ public class SeriesManifestServiceTests
     }
 
     [Fact]
-    public async Task GetManifestAsync_IncomingP8345_FindsFranchiseMembersAndOrdersByChain()
+    public async Task GetManifestAsync_IncomingP8345_DoesNotExpandFranchiseByDefault()
     {
         using var reconciler = CreateReconciler(
             new()
             {
-                ["QSeries"] = Entity("QSeries", "Film Franchise"),
+                ["QSeries"] = Entity("QSeries", "Film Franchise", Claims(ItemClaim("P31", "Q196600"))),
                 ["Q1"] = Entity("Q1", "First Film", Claims(ItemClaim("P8345", "QSeries"), ItemClaim("P156", "Q2"))),
                 ["Q2"] = Entity("Q2", "Second Film", Claims(ItemClaim("P8345", "QSeries"), ItemClaim("P155", "Q1")))
             },
@@ -58,10 +58,103 @@ public class SeriesManifestServiceTests
 
         var manifest = await reconciler.Series.GetManifestAsync("QSeries");
 
+        Assert.Empty(manifest.Items);
+        Assert.Equal(WikidataContainerKind.Franchise, manifest.ContainerKind);
+        Assert.Contains(manifest.Warnings, w => w.Code == "UnsupportedContainerKind");
+    }
+
+    [Fact]
+    public async Task GetManifestAsync_IncomingP8345_CanExpandFranchiseWhenRequested()
+    {
+        using var reconciler = CreateReconciler(
+            new()
+            {
+                ["QSeries"] = Entity("QSeries", "Film Franchise", Claims(ItemClaim("P31", "Q196600"))),
+                ["Q1"] = Entity("Q1", "First Film", Claims(ItemClaim("P8345", "QSeries"), ItemClaim("P156", "Q2"))),
+                ["Q2"] = Entity("Q2", "Second Film", Claims(ItemClaim("P8345", "QSeries"), ItemClaim("P155", "Q1")))
+            },
+            p8345: ["Q2", "Q1"]);
+
+        var manifest = await reconciler.Series.GetManifestAsync(new SeriesManifestRequest
+        {
+            SeriesQid = "QSeries",
+            IncludeFranchiseMembers = true
+        });
+
         Assert.Equal(["Q1", "Q2"], manifest.Items.Select(i => i.Qid));
         Assert.All(manifest.Items, item => Assert.Contains("P8345", item.SourceProperties));
         Assert.Contains(manifest.Items[0].Relationships, r => r.PropertyId == "P8345" && r.TargetQid == "QSeries" && r.Direction == "Outgoing");
         Assert.All(manifest.Items, item => Assert.Equal(SeriesManifestOrderSource.PreviousNextChain, item.OrderSource));
+    }
+
+    [Fact]
+    public async Task GetManifestAsync_SpiderVerseClassifiesOrderedFilmSeriesAndCountsRows()
+    {
+        using var reconciler = CreateReconciler(
+            new()
+            {
+                ["Q99601314"] = Entity("Q99601314", "Spider-Verse", Claims(ItemClaim("P31", "Q24856"))),
+                ["QFilm1"] = Entity("QFilm1", "Spider-Man: Into the Spider-Verse", Claims(ItemClaim("P179", "Q99601314", "1"))),
+                ["QFilm2"] = Entity("QFilm2", "Spider-Man: Across the Spider-Verse", Claims(ItemClaim("P179", "Q99601314", "2"))),
+                ["QFilm3"] = Entity("QFilm3", "Spider-Man: Beyond the Spider-Verse", Claims(ItemClaim("P179", "Q99601314", "3"))),
+                ["QFilm4"] = Entity("QFilm4", "Untitled Spider-Verse film", Claims(ItemClaim("P179", "Q99601314", "4")))
+            },
+            p179: ["QFilm4", "QFilm2", "QFilm1", "QFilm3"]);
+
+        var manifest = await reconciler.Series.GetManifestAsync("Q99601314");
+
+        Assert.Equal(WikidataContainerKind.OrderedSeries, manifest.ContainerKind);
+        Assert.Equal(["QFilm1", "QFilm2", "QFilm3", "QFilm4"], manifest.Items.Select(i => i.Qid));
+        Assert.Contains(manifest.ExpectedCounts, f => f.Kind == "manifest_items" && f.Count == 4);
+    }
+
+    [Fact]
+    public async Task GetManifestAsync_SonyPicturesAnimationListIsDiagnosticOnly()
+    {
+        using var reconciler = CreateReconciler(
+            new()
+            {
+                ["Q65071834"] = Entity("Q65071834", "list of Sony Pictures Animation productions", Claims(ItemClaim("P31", "Q13406463"))),
+                ["QFilm"] = Entity("QFilm", "Open Season", Claims(ItemClaim("P179", "Q65071834", "1")))
+            },
+            p179: ["QFilm"]);
+
+        var manifest = await reconciler.Series.GetManifestAsync("Q65071834");
+
+        Assert.Empty(manifest.Items);
+        Assert.Equal(WikidataContainerKind.PublisherOrProductionList, manifest.ContainerKind);
+        Assert.Contains(manifest.Warnings, w => w.Code == "UnsupportedContainerKind");
+    }
+
+    [Fact]
+    public async Task GetManifestAsync_SandmanReturnsExpectedIssueCountFact()
+    {
+        using var reconciler = CreateReconciler(
+            new()
+            {
+                ["Q827099"] = Entity("Q827099", "The Sandman", Claims(ItemClaim("P31", "Q1004")))
+            });
+
+        var manifest = await reconciler.Series.GetManifestAsync("Q827099");
+
+        Assert.Equal(WikidataContainerKind.ComicSeries, manifest.ContainerKind);
+        Assert.Contains(manifest.ExpectedCounts, f => f.Kind == "issues" && f.Count == 75);
+    }
+
+    [Fact]
+    public async Task GetManifestAsync_AkiraReturnsMangaVolumeAndChapterCountFacts()
+    {
+        using var reconciler = CreateReconciler(
+            new()
+            {
+                ["Q91486"] = Entity("Q91486", "Akira", Claims(ItemClaim("P31", "Q21198342")))
+            });
+
+        var manifest = await reconciler.Series.GetManifestAsync("Q91486");
+
+        Assert.Equal(WikidataContainerKind.MangaSeries, manifest.ContainerKind);
+        Assert.Contains(manifest.ExpectedCounts, f => f.Kind == "volumes" && f.Count == 6);
+        Assert.Contains(manifest.ExpectedCounts, f => f.Kind == "chapters" && f.Count == 120);
     }
 
     [Fact]
@@ -295,11 +388,11 @@ public class SeriesManifestServiceTests
 
             if (uri.Contains("action=query", StringComparison.OrdinalIgnoreCase))
             {
-                if (uri.Contains("haswbstatement:P179=QSeries", StringComparison.OrdinalIgnoreCase))
+                if (uri.Contains("haswbstatement:P179=", StringComparison.OrdinalIgnoreCase))
                     return Task.FromResult(TestHttpMessageHandler.Json(TestPayloads.QueryResponse((p179 ?? []).ToArray())));
-                if (uri.Contains("haswbstatement:P361=QSeries", StringComparison.OrdinalIgnoreCase))
+                if (uri.Contains("haswbstatement:P361=", StringComparison.OrdinalIgnoreCase))
                     return Task.FromResult(TestHttpMessageHandler.Json(TestPayloads.QueryResponse((p361 ?? []).ToArray())));
-                if (uri.Contains("haswbstatement:P8345=QSeries", StringComparison.OrdinalIgnoreCase))
+                if (uri.Contains("haswbstatement:P8345=", StringComparison.OrdinalIgnoreCase))
                     return Task.FromResult(TestHttpMessageHandler.Json(TestPayloads.QueryResponse((p8345 ?? []).ToArray())));
             }
 

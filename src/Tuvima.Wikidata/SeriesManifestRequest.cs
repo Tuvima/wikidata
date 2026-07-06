@@ -9,6 +9,7 @@ public sealed class SeriesManifestRequest
     public string Language { get; init; } = "en";
     public bool IncludeCollections { get; init; } = true;
     public bool ExpandCollections { get; init; } = true;
+    public bool IncludeFranchiseMembers { get; init; } = false;
     public bool IncludePublicationDate { get; init; } = true;
     public bool IncludeDescriptions { get; init; } = false;
     public int MaxDepth { get; init; } = 2;

@@ -68,6 +68,16 @@ public class PersonsServiceShapeTests
     }
 
     [Fact]
+    public async Task SearchBatchAsync_EmptyList_ReturnsEmpty()
+    {
+        using var reconciler = new WikidataReconciler();
+
+        var results = await reconciler.Persons.SearchBatchAsync([]);
+
+        Assert.Empty(results);
+    }
+
+    [Fact]
     public void PersonSearchResult_DefaultShape_IsNotFound()
     {
         var result = new PersonSearchResult();

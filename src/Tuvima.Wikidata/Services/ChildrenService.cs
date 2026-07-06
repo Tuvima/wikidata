@@ -233,6 +233,11 @@ public sealed class ChildrenService
             ParentQid = request.ParentQid,
             PrimaryCount = seasons.Count,
             TotalCount = children.Count,
+            ExpectedCounts =
+            [
+                CountFact("seasons", seasons.Count),
+                CountFact("children", children.Count)
+            ],
             Children = children
         };
     }
@@ -262,6 +267,7 @@ public sealed class ChildrenService
             ParentQid = request.ParentQid,
             PrimaryCount = tracks.Count,
             TotalCount = capped.Count,
+            ExpectedCounts = [CountFact("tracks", tracks.Count)],
             Children = capped.Select(t => MapToChildRef(t, parent: null)).ToList()
         };
     }
@@ -283,6 +289,7 @@ public sealed class ChildrenService
             ParentQid = request.ParentQid,
             PrimaryCount = issues.Count,
             TotalCount = capped.Count,
+            ExpectedCounts = [CountFact("issues", issues.Count)],
             Children = capped.Select(i => MapToChildRef(i, parent: null)).ToList()
         };
     }
@@ -310,6 +317,7 @@ public sealed class ChildrenService
             ParentQid = request.ParentQid,
             PrimaryCount = combined.Count,
             TotalCount = capped.Count,
+            ExpectedCounts = [CountFact("manifest_items", combined.Count)],
             Children = capped.Select(b => MapToChildRef(b, parent: null)).ToList()
         };
     }
@@ -342,9 +350,19 @@ public sealed class ChildrenService
             ParentQid = request.ParentQid,
             PrimaryCount = children.Count,
             TotalCount = capped.Count,
+            ExpectedCounts = [CountFact("manifest_items", children.Count)],
             Children = capped.Select(c => MapCustomChildRef(c, traversal)).ToList()
         };
     }
+
+    private static ManifestCountFact CountFact(string kind, int count)
+        => new()
+        {
+            Kind = kind,
+            Count = count,
+            Source = "wikidata-child-traversal",
+            Confidence = 0.7
+        };
 
     private static ChildEntityRef MapToChildRef(ChildEntityInfo info, int? parent)
     {

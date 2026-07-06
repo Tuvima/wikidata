@@ -67,8 +67,8 @@ public class BridgeResolutionServiceTests
     [Fact]
     public void WikidataLibraryInfo_ExposesPackageVersion()
     {
-        Assert.StartsWith("3.3.0", WikidataLibraryInfo.PackageVersion, StringComparison.Ordinal);
-        Assert.StartsWith("3.3.0", WikidataReconciler.LibraryVersion, StringComparison.Ordinal);
+        Assert.StartsWith("3.4.1", WikidataLibraryInfo.PackageVersion, StringComparison.Ordinal);
+        Assert.StartsWith("3.4.1", WikidataReconciler.LibraryVersion, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -342,6 +342,92 @@ public class BridgeResolutionServiceTests
         Assert.Equal("QEdition", result.SelectedCandidate?.Qid);
         Assert.Equal("QWork", result.CanonicalWorkQid);
         Assert.Equal("P629", result.Rollup?.RelationshipPath.Single().PropertyId);
+    }
+
+    [Fact]
+    public async Task ResolveAsync_ClassifiesP361ListAsDiagnosticNotImmediateSeries()
+    {
+        var handler = new TestHttpMessageHandler((request, _) =>
+        {
+            var uri = Uri.UnescapeDataString(request.RequestUri!.ToString());
+
+            if (uri.Contains("haswbstatement:P345=tt4633694", StringComparison.OrdinalIgnoreCase))
+                return Task.FromResult(TestHttpMessageHandler.Json(TestPayloads.QueryResponse("QFilm")));
+
+            if (uri.Contains("action=wbgetentities", StringComparison.OrdinalIgnoreCase))
+            {
+                var entities = new[]
+                {
+                    TestPayloads.Entity("QFilm", "Spider-Man: Into the Spider-Verse", claims: TestPayloads.Claims(
+                        ("P31", "wikibase-item", TestPayloads.ItemDataValue("Q11424"), "normal"),
+                        ("P345", "external-id", TestPayloads.StringDataValue("tt4633694"), "normal"),
+                        ("P361", "wikibase-item", TestPayloads.ItemDataValue("Q65071834"), "normal"))),
+                    TestPayloads.Entity("Q65071834", "list of Sony Pictures Animation productions", claims: TestPayloads.Claims(
+                        ("P31", "wikibase-item", TestPayloads.ItemDataValue("Q13406463"), "normal")))
+                };
+
+                return Task.FromResult(TestHttpMessageHandler.Json(TestPayloads.EntityResponse(entities)));
+            }
+
+            throw new InvalidOperationException($"Unexpected request: {uri}");
+        });
+
+        using var reconciler = TestPayloads.CreateReconciler(handler);
+
+        var result = await reconciler.Bridge.ResolveAsync(new BridgeResolutionRequest
+        {
+            CorrelationKey = "movie",
+            MediaKind = BridgeMediaKind.Movie,
+            BridgeIds = new Dictionary<string, string> { ["imdb_id"] = "tt4633694" }
+        });
+
+        var series = Assert.Single(result.Series);
+        Assert.Equal("Q65071834", series.SeriesQid);
+        Assert.Equal(WikidataContainerKind.PublisherOrProductionList, series.ContainerKind);
+        Assert.False(series.IsImmediateSeries);
+    }
+
+    [Fact]
+    public async Task ResolveAsync_ClassifiesP179FilmSeriesAsImmediateSeries()
+    {
+        var handler = new TestHttpMessageHandler((request, _) =>
+        {
+            var uri = Uri.UnescapeDataString(request.RequestUri!.ToString());
+
+            if (uri.Contains("haswbstatement:P345=tt4633694", StringComparison.OrdinalIgnoreCase))
+                return Task.FromResult(TestHttpMessageHandler.Json(TestPayloads.QueryResponse("QFilm")));
+
+            if (uri.Contains("action=wbgetentities", StringComparison.OrdinalIgnoreCase))
+            {
+                var entities = new[]
+                {
+                    TestPayloads.Entity("QFilm", "Spider-Man: Into the Spider-Verse", claims: TestPayloads.Claims(
+                        ("P31", "wikibase-item", TestPayloads.ItemDataValue("Q11424"), "normal"),
+                        ("P345", "external-id", TestPayloads.StringDataValue("tt4633694"), "normal"),
+                        ("P179", "wikibase-item", TestPayloads.ItemDataValue("Q99601314"), "normal"))),
+                    TestPayloads.Entity("Q99601314", "Spider-Verse", claims: TestPayloads.Claims(
+                        ("P31", "wikibase-item", TestPayloads.ItemDataValue("Q24856"), "normal")))
+                };
+
+                return Task.FromResult(TestHttpMessageHandler.Json(TestPayloads.EntityResponse(entities)));
+            }
+
+            throw new InvalidOperationException($"Unexpected request: {uri}");
+        });
+
+        using var reconciler = TestPayloads.CreateReconciler(handler);
+
+        var result = await reconciler.Bridge.ResolveAsync(new BridgeResolutionRequest
+        {
+            CorrelationKey = "movie",
+            MediaKind = BridgeMediaKind.Movie,
+            BridgeIds = new Dictionary<string, string> { ["imdb_id"] = "tt4633694" }
+        });
+
+        var series = Assert.Single(result.Series);
+        Assert.Equal("Q99601314", series.SeriesQid);
+        Assert.Equal(WikidataContainerKind.OrderedSeries, series.ContainerKind);
+        Assert.True(series.IsImmediateSeries);
     }
 
     [Fact]

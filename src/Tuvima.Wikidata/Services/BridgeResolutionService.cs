@@ -33,7 +33,7 @@ public sealed class BridgeResolutionService
         };
 
     private static readonly string[] CreatorPropertyIds = ["P50", "P57", "P58", "P86", "P162", "P170", "P175", "P676"];
-    private static readonly string[] SeriesPropertyIds = ["P179", "P361"];
+    private static readonly string[] SeriesPropertyIds = ["P179", "P361", "P8345"];
 
     private readonly ReconcilerContext _ctx;
     private readonly ReconciliationService _reconcile;
@@ -717,11 +717,15 @@ public sealed class BridgeResolutionService
             : BuildRollup(request, entity);
 
         var relatedQids = entity is null ? [] : GetRelationshipQids(entity);
-        var labels = relatedQids.Count == 0
-            ? new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase)
-            : await FetchLabelsAsync(relatedQids, language, cancellationToken).ConfigureAwait(false);
+        var relatedEntities = relatedQids.Count == 0
+            ? new Dictionary<string, WikidataEntityInfo>(StringComparer.OrdinalIgnoreCase)
+            : await FetchPublicEntitiesAsync(relatedQids, language, cancellationToken).ConfigureAwait(false);
+        var labels = relatedQids.ToDictionary(
+            qid => qid,
+            qid => relatedEntities.TryGetValue(qid, out var related) ? related.Label : null,
+            StringComparer.OrdinalIgnoreCase);
 
-        var series = entity is null ? [] : ExtractSeries(entity, labels);
+        var series = entity is null ? [] : ExtractSeries(entity, labels, relatedEntities);
         var relationships = entity is null ? [] : ExtractRelationships(entity, labels);
 
         return new BridgeResolutionResult
@@ -774,6 +778,22 @@ public sealed class BridgeResolutionService
             : null;
     }
 
+    private async Task<Dictionary<string, WikidataEntityInfo>> FetchPublicEntitiesAsync(
+        IReadOnlyList<string> qids,
+        string language,
+        CancellationToken cancellationToken)
+    {
+        if (qids.Count == 0)
+            return new Dictionary<string, WikidataEntityInfo>(StringComparer.OrdinalIgnoreCase);
+
+        var fetched = await _ctx.EntityFetcher.FetchEntitiesAsync(qids, language, cancellationToken)
+            .ConfigureAwait(false);
+        return fetched.ToDictionary(
+            kvp => kvp.Key,
+            kvp => EntityMapper.MapEntity(kvp.Value, language),
+            StringComparer.OrdinalIgnoreCase);
+    }
+
     private CanonicalRollup BuildRollup(BridgeResolutionRequest request, WikidataEntityInfo entity)
     {
         var resolvedEntityQid = entity.Id;
@@ -823,7 +843,8 @@ public sealed class BridgeResolutionService
 
     private static IReadOnlyList<BridgeSeriesInfo> ExtractSeries(
         WikidataEntityInfo entity,
-        IReadOnlyDictionary<string, string?> labels)
+        IReadOnlyDictionary<string, string?> labels,
+        IReadOnlyDictionary<string, WikidataEntityInfo> relatedEntities)
     {
         var result = new List<BridgeSeriesInfo>();
 
@@ -835,35 +856,63 @@ public sealed class BridgeResolutionService
                 if (string.IsNullOrWhiteSpace(seriesQid))
                     continue;
 
-                result.Add(new BridgeSeriesInfo
-                {
-                    SeriesQid = seriesQid,
-                    SeriesLabel = labels.TryGetValue(seriesQid, out var label) ? label : null,
-                    Position = TryGetQualifierValue(claim, "P1545") ?? GetFirstRawValue(entity, "P1545"),
-                    PreviousQid = GetFirstEntityId(entity, "P155"),
-                    NextQid = GetFirstEntityId(entity, "P156"),
-                    SourcePropertyId = "P179",
-                    Confidence = 1.0
-                });
+                result.Add(BuildSeriesInfo(
+                    entity,
+                    labels,
+                    relatedEntities,
+                    seriesQid,
+                    "P179",
+                    TryGetQualifierValue(claim, "P1545") ?? GetFirstRawValue(entity, "P1545"),
+                    baseConfidence: 1.0));
             }
         }
 
         var partOf = GetEntityIds(entity, "P361");
         foreach (var qid in partOf)
         {
-            result.Add(new BridgeSeriesInfo
-            {
-                SeriesQid = qid,
-                SeriesLabel = labels.TryGetValue(qid, out var label) ? label : null,
-                Position = GetFirstRawValue(entity, "P1545"),
-                PreviousQid = GetFirstEntityId(entity, "P155"),
-                NextQid = GetFirstEntityId(entity, "P156"),
-                SourcePropertyId = "P361",
-                Confidence = 0.75
-            });
+            result.Add(BuildSeriesInfo(
+                entity,
+                labels,
+                relatedEntities,
+                qid,
+                "P361",
+                GetFirstRawValue(entity, "P1545"),
+                baseConfidence: 0.75));
         }
 
         return result;
+    }
+
+    private static BridgeSeriesInfo BuildSeriesInfo(
+        WikidataEntityInfo sourceEntity,
+        IReadOnlyDictionary<string, string?> labels,
+        IReadOnlyDictionary<string, WikidataEntityInfo> relatedEntities,
+        string seriesQid,
+        string sourcePropertyId,
+        string? position,
+        double baseConfidence)
+    {
+        relatedEntities.TryGetValue(seriesQid, out var container);
+        var label = labels.TryGetValue(seriesQid, out var fetchedLabel) ? fetchedLabel : container?.Label;
+        var kind = container is not null
+            ? WikidataContainerClassifier.Classify(container)
+            : WikidataContainerClassifier.Classify(label, null, null);
+        var isImmediateSeries = sourcePropertyId == "P179"
+            ? !WikidataContainerClassifier.IsRejectedShelfKind(kind)
+            : WikidataContainerClassifier.IsImmediateSeriesKind(kind);
+
+        return new BridgeSeriesInfo
+        {
+            SeriesQid = seriesQid,
+            SeriesLabel = label,
+            ContainerKind = kind,
+            IsImmediateSeries = isImmediateSeries,
+            Position = position,
+            PreviousQid = GetFirstEntityId(sourceEntity, "P155"),
+            NextQid = GetFirstEntityId(sourceEntity, "P156"),
+            SourcePropertyId = sourcePropertyId,
+            Confidence = isImmediateSeries ? baseConfidence : Math.Min(baseConfidence, 0.35)
+        };
     }
 
     private static IReadOnlyList<BridgeRelationshipEdge> ExtractRelationships(
@@ -1283,7 +1332,7 @@ public sealed class BridgeResolutionService
 
     private static IReadOnlyList<string> GetRelationshipQids(WikidataEntityInfo entity)
     {
-        return new[] { "P179", "P1080", "P361", "P527", "P155", "P156", "P629", "P747" }
+        return new[] { "P179", "P1080", "P361", "P527", "P8345", "P155", "P156", "P629", "P747" }
             .SelectMany(propertyId => GetEntityIds(entity, propertyId))
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToList();

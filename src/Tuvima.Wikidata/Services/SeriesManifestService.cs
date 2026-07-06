@@ -52,22 +52,51 @@ public sealed class SeriesManifestService
         var fetchedRoot = await FetchPublicEntitiesAsync([request.SeriesQid], language, cancellationToken)
             .ConfigureAwait(false);
         fetchedRoot.TryGetValue(request.SeriesQid, out var seriesEntity);
+        var containerKind = WikidataContainerClassifier.Classify(seriesEntity);
+
+        if (WikidataContainerClassifier.IsRejectedShelfKind(containerKind) &&
+            !(containerKind == WikidataContainerKind.Franchise && request.IncludeFranchiseMembers))
+        {
+            warnings.Add(
+                "UnsupportedContainerKind",
+                $"Container {request.SeriesQid} is classified as {containerKind} and will not be used as an immediate series manifest.",
+                request.SeriesQid);
+
+            return new SeriesManifestResult
+            {
+                SeriesQid = request.SeriesQid,
+                SeriesLabel = seriesEntity?.Label,
+                ContainerKind = containerKind,
+                ExpectedCounts = BuildExpectedCounts(request.SeriesQid, containerKind, []),
+                Items = [],
+                Warnings = warnings.ToList(),
+                Completeness = SeriesManifestCompleteness.Empty
+            };
+        }
 
         var discovered = new Dictionary<string, DiscoveredItem>(StringComparer.OrdinalIgnoreCase);
         var pendingFetch = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var includePartOfMembers = containerKind == WikidataContainerKind.Unknown ||
+                                   WikidataContainerClassifier.IsImmediateSeriesKind(containerKind);
+        var includeFranchiseMembers = request.IncludeFranchiseMembers &&
+                                      containerKind == WikidataContainerKind.Franchise;
 
         var p179Task = _ctx.SearchClient.SearchAllByStatementAsync(
             $"haswbstatement:{PartOfSeries}={request.SeriesQid}",
             typeFilter: null,
             cancellationToken);
-        var p361Task = _ctx.SearchClient.SearchAllByStatementAsync(
-            $"haswbstatement:{PartOf}={request.SeriesQid}",
-            typeFilter: null,
-            cancellationToken);
-        var p8345Task = _ctx.SearchClient.SearchAllByStatementAsync(
-            $"haswbstatement:{Franchise}={request.SeriesQid}",
-            typeFilter: null,
-            cancellationToken);
+        var p361Task = includePartOfMembers
+            ? _ctx.SearchClient.SearchAllByStatementAsync(
+                $"haswbstatement:{PartOf}={request.SeriesQid}",
+                typeFilter: null,
+                cancellationToken)
+            : Task.FromResult(new List<string>());
+        var p8345Task = includeFranchiseMembers
+            ? _ctx.SearchClient.SearchAllByStatementAsync(
+                $"haswbstatement:{Franchise}={request.SeriesQid}",
+                typeFilter: null,
+                cancellationToken)
+            : Task.FromResult(new List<string>());
 
         await Task.WhenAll(p179Task, p361Task, p8345Task).ConfigureAwait(false);
 
@@ -150,11 +179,14 @@ public sealed class SeriesManifestService
             : await FetchLabelsAsync(relationshipTargets, language, cancellationToken).ConfigureAwait(false);
 
         var manifestItems = sorted.Select(item => ToPublicItem(item, entities, labels, request.IncludeDescriptions)).ToList();
+        var expectedCounts = BuildExpectedCounts(request.SeriesQid, containerKind, manifestItems);
 
         return new SeriesManifestResult
         {
             SeriesQid = request.SeriesQid,
             SeriesLabel = seriesEntity?.Label,
+            ContainerKind = containerKind,
+            ExpectedCounts = expectedCounts,
             Items = manifestItems,
             Warnings = warnings.ToList(),
             Completeness = DetermineCompleteness(manifestItems, warnings)
@@ -542,6 +574,80 @@ public sealed class SeriesManifestService
                 .ToList()
         };
     }
+
+    private static IReadOnlyList<ManifestCountFact> BuildExpectedCounts(
+        string seriesQid,
+        WikidataContainerKind containerKind,
+        IReadOnlyList<SeriesManifestItem> manifestItems)
+    {
+        var facts = new List<ManifestCountFact>();
+
+        if (KnownSparseCountFacts.TryGetValue(seriesQid, out var knownFacts))
+            facts.AddRange(knownFacts);
+
+        if (manifestItems.Count > 0)
+        {
+            facts.Add(new ManifestCountFact
+            {
+                Kind = CountKindForContainer(containerKind),
+                Count = manifestItems.Count,
+                Source = "wikidata-manifest-rows",
+                Confidence = 0.7,
+                Note = "Concrete child rows discovered in Wikidata traversal."
+            });
+        }
+
+        return facts
+            .GroupBy(fact => $"{fact.Kind}|{fact.Count}|{fact.Source}", StringComparer.OrdinalIgnoreCase)
+            .Select(group => group.First())
+            .ToList();
+    }
+
+    private static string CountKindForContainer(WikidataContainerKind containerKind)
+        => containerKind switch
+        {
+            WikidataContainerKind.ComicSeries => "issues",
+            WikidataContainerKind.MangaSeries => "volumes",
+            WikidataContainerKind.TvShow => "seasons",
+            WikidataContainerKind.TvSeason => "episodes",
+            WikidataContainerKind.AlbumRelease => "tracks",
+            _ => "manifest_items"
+        };
+
+    private static readonly IReadOnlyDictionary<string, IReadOnlyList<ManifestCountFact>> KnownSparseCountFacts =
+        new Dictionary<string, IReadOnlyList<ManifestCountFact>>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["Q827099"] =
+            [
+                new ManifestCountFact
+                {
+                    Kind = "issues",
+                    Count = 75,
+                    Source = "external-reference",
+                    Confidence = 0.9,
+                    Note = "Original The Sandman comic-book run."
+                }
+            ],
+            ["Q91486"] =
+            [
+                new ManifestCountFact
+                {
+                    Kind = "volumes",
+                    Count = 6,
+                    Source = "external-reference",
+                    Confidence = 0.9,
+                    Note = "Collected Akira manga volumes."
+                },
+                new ManifestCountFact
+                {
+                    Kind = "chapters",
+                    Count = 120,
+                    Source = "external-reference",
+                    Confidence = 0.85,
+                    Note = "Serialized Akira manga chapters."
+                }
+            ]
+        };
 
     private static SeriesManifestCompleteness DetermineCompleteness(
         IReadOnlyList<SeriesManifestItem> items,

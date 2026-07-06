@@ -22,6 +22,7 @@ The manifest service uses existing Wikidata and Wikimedia infrastructure in the 
 |---|---|
 | P179 | Incoming `part of the series` links from works to the series |
 | P361 | Incoming `part of` links from works to the series |
+| P8345 | Incoming `media franchise` links when explicitly requested |
 | P527 | Outgoing `has part` links from the series or collection items |
 | P1545 | `series ordinal` qualifiers for ordering |
 | P155 | `follows` previous-work chain |
@@ -45,6 +46,10 @@ var manifest = await reconciler.Series.GetManifestAsync(new SeriesManifestReques
 ```
 
 Collection expansion is factual only: if a discovered item has P527 children, it is treated as collection-like and can be expanded. The library does not decide whether short fiction should be collapsed, hidden, or displayed as missing; consuming applications own that product behavior.
+
+The service classifies the requested container before traversing it. Ordered series, album releases, TV shows/seasons, comic series, and manga series are sequence-compatible containers. Franchises, universes, Wikimedia list articles, and publisher/production lists are reported as their own `ContainerKind`; they are not treated as immediate ordered series by default. Set `IncludeFranchiseMembers = true` only when the caller explicitly wants franchise expansion.
+
+`SeriesManifestResult.ExpectedCounts` reports count facts separately from concrete manifest rows. This lets callers preserve sparse external knowledge such as issue, volume, chapter, episode, or track totals without inventing missing child entities.
 
 ## Ordering Confidence
 
