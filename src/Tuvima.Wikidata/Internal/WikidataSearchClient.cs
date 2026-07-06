@@ -188,17 +188,26 @@ internal sealed class WikidataSearchClient
         string query, string language, IReadOnlyList<string> typeQids, int limit,
         CancellationToken cancellationToken = default)
     {
-        // Build CirrusSearch query with haswbstatement for each type (OR logic)
-        var typeFilters = string.Join(" OR ", typeQids.Select(t => $"haswbstatement:P31={t}"));
-        var searchQuery = $"{query} ({typeFilters})";
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var merged = new List<string>();
 
-        var url = $"{_options.ApiEndpoint}?action=query&list=search&srnamespace=0" +
-                  $"&srlimit={limit}&srsearch={Uri.EscapeDataString(searchQuery)}&format=json";
+        foreach (var typeQid in typeQids.Where(t => !string.IsNullOrWhiteSpace(t)).Distinct(StringComparer.OrdinalIgnoreCase))
+        {
+            var searchQuery = $"{query} haswbstatement:P31={typeQid}";
+            var url = $"{_options.ApiEndpoint}?action=query&list=search&srnamespace=0" +
+                      $"&srlimit={limit}&srsearch={Uri.EscapeDataString(searchQuery)}&format=json";
 
-        var json = await _httpClient.GetStringAsync(url, cancellationToken).ConfigureAwait(false);
-        var response = ProviderJson.Deserialize(json, WikidataJsonContext.Default.QuerySearchResponse, "query.search");
+            var json = await _httpClient.GetStringAsync(url, cancellationToken).ConfigureAwait(false);
+            var response = ProviderJson.Deserialize(json, WikidataJsonContext.Default.QuerySearchResponse, "query.search");
+            var ids = response?.Query?.Search?.Select(r => r.Title) ?? [];
+            foreach (var id in ids)
+            {
+                if (seen.Add(id))
+                    merged.Add(id);
+            }
+        }
 
-        return response?.Query?.Search?.Select(r => r.Title).ToList() ?? [];
+        return merged.Count > limit ? merged.Take(limit).ToList() : merged;
     }
 
     /// <summary>

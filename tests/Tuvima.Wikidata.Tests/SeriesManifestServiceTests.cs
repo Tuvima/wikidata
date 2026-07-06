@@ -142,6 +142,36 @@ public class SeriesManifestServiceTests
     }
 
     [Fact]
+    public async Task GetManifestAsync_BatmanReturnsExpectedOriginalRunIssueCountFact()
+    {
+        using var reconciler = CreateReconciler(
+            new()
+            {
+                ["Q2633138"] = Entity("Q2633138", "Batman", Claims(ItemClaim("P31", "Q1004")))
+            });
+
+        var manifest = await reconciler.Series.GetManifestAsync("Q2633138");
+
+        Assert.Equal(WikidataContainerKind.ComicSeries, manifest.ContainerKind);
+        Assert.Contains(manifest.ExpectedCounts, f => f.Kind == "issues" && f.Count == 713);
+    }
+
+    [Fact]
+    public async Task GetManifestAsync_WatchmenReturnsExpectedLimitedSeriesIssueCountFact()
+    {
+        using var reconciler = CreateReconciler(
+            new()
+            {
+                ["Q128444"] = Entity("Q128444", "Watchmen", Claims(ItemClaim("P31", "Q3297186")))
+            });
+
+        var manifest = await reconciler.Series.GetManifestAsync("Q128444");
+
+        Assert.Equal(WikidataContainerKind.ComicSeries, manifest.ContainerKind);
+        Assert.Contains(manifest.ExpectedCounts, f => f.Kind == "issues" && f.Count == 12);
+    }
+
+    [Fact]
     public async Task GetManifestAsync_AkiraReturnsMangaVolumeAndChapterCountFacts()
     {
         using var reconciler = CreateReconciler(

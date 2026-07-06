@@ -34,7 +34,8 @@ internal static class WikidataContainerClassifier
 
     private static readonly HashSet<string> ComicSeriesTypes = new(StringComparer.OrdinalIgnoreCase)
     {
-        "Q1004"
+        "Q1004",
+        "Q3297186"
     };
 
     private static readonly HashSet<string> MangaSeriesTypes = new(StringComparer.OrdinalIgnoreCase)
@@ -83,6 +84,7 @@ internal static class WikidataContainerClassifier
         }
 
         if (types.Any(ComicSeriesTypes.Contains) ||
+            text.Contains("graphic novel", StringComparison.Ordinal) ||
             text.Contains("comic book series", StringComparison.Ordinal) ||
             text.Contains("comics series", StringComparison.Ordinal))
         {

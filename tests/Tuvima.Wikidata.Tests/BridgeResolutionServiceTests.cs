@@ -67,8 +67,8 @@ public class BridgeResolutionServiceTests
     [Fact]
     public void WikidataLibraryInfo_ExposesPackageVersion()
     {
-        Assert.StartsWith("3.4.1", WikidataLibraryInfo.PackageVersion, StringComparison.Ordinal);
-        Assert.StartsWith("3.4.1", WikidataReconciler.LibraryVersion, StringComparison.Ordinal);
+        Assert.StartsWith("3.4.5", WikidataLibraryInfo.PackageVersion, StringComparison.Ordinal);
+        Assert.StartsWith("3.4.5", WikidataReconciler.LibraryVersion, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -428,6 +428,193 @@ public class BridgeResolutionServiceTests
         Assert.Equal("Q99601314", series.SeriesQid);
         Assert.Equal(WikidataContainerKind.OrderedSeries, series.ContainerKind);
         Assert.True(series.IsImmediateSeries);
+    }
+
+    [Fact]
+    public async Task ResolveAsync_TextFallbackAcceptsMangaSeriesTypeHint()
+    {
+        var handler = new TestHttpMessageHandler((request, _) =>
+        {
+            var uri = Uri.UnescapeDataString(request.RequestUri!.ToString());
+
+            if (uri.Contains("action=query", StringComparison.OrdinalIgnoreCase)
+                && uri.Contains("list=search", StringComparison.OrdinalIgnoreCase)
+                && uri.Contains("Akira", StringComparison.OrdinalIgnoreCase))
+            {
+                return Task.FromResult(TestHttpMessageHandler.Json(TestPayloads.QueryResponse("Q91486")));
+            }
+
+            if (uri.Contains("action=wbsearchentities", StringComparison.OrdinalIgnoreCase)
+                && uri.Contains("Akira", StringComparison.OrdinalIgnoreCase))
+            {
+                return Task.FromResult(TestHttpMessageHandler.Json(TestPayloads.SearchResponse(("Q91486", "Akira"))));
+            }
+
+            if (uri.Contains("action=wbgetentities", StringComparison.OrdinalIgnoreCase)
+                && uri.Contains("ids=Q91486", StringComparison.OrdinalIgnoreCase))
+            {
+                return Task.FromResult(TestHttpMessageHandler.Json(TestPayloads.EntityResponse(
+                    TestPayloads.Entity("Q91486", "Akira", claims: TestPayloads.Claims(
+                        ("P31", "wikibase-item", TestPayloads.ItemDataValue("Q21198342"), "normal"))))));
+            }
+
+            throw new InvalidOperationException($"Unexpected request: {uri}");
+        });
+
+        using var reconciler = TestPayloads.CreateReconciler(handler);
+
+        var result = await reconciler.Bridge.ResolveAsync(new BridgeResolutionRequest
+        {
+            CorrelationKey = "akira",
+            MediaKind = BridgeMediaKind.ComicSeries,
+            Title = "Akira"
+        });
+
+        Assert.True(result.Found);
+        Assert.Equal(BridgeResolutionStrategy.TextSearch, result.MatchedBy);
+        Assert.Equal("Q91486", result.SelectedCandidate?.Qid);
+        Assert.Contains("type.match", result.SelectedCandidate?.ReasonCodes ?? []);
+    }
+
+    [Fact]
+    public async Task ResolveAsync_TextFallbackFindsAmbiguousComicSeriesWithTypedSearch()
+    {
+        var typedSearchOrder = new List<string>();
+        var handler = new TestHttpMessageHandler((request, _) =>
+        {
+            var uri = Uri.UnescapeDataString(request.RequestUri!.ToString());
+
+            if (uri.Contains("action=query", StringComparison.OrdinalIgnoreCase)
+                && uri.Contains("list=search", StringComparison.OrdinalIgnoreCase)
+                && uri.Contains("Batman", StringComparison.OrdinalIgnoreCase)
+                && uri.Contains("haswbstatement:P31=Q14406742", StringComparison.OrdinalIgnoreCase))
+            {
+                typedSearchOrder.Add("Q14406742");
+                return Task.FromResult(TestHttpMessageHandler.Json(TestPayloads.QueryResponse("Q2633138")));
+            }
+
+            if (uri.Contains("action=query", StringComparison.OrdinalIgnoreCase)
+                && uri.Contains("list=search", StringComparison.OrdinalIgnoreCase)
+                && uri.Contains("Batman", StringComparison.OrdinalIgnoreCase)
+                && uri.Contains("haswbstatement:P31=Q1004", StringComparison.OrdinalIgnoreCase))
+            {
+                typedSearchOrder.Add("Q1004");
+                return Task.FromResult(TestHttpMessageHandler.Json(TestPayloads.QueryResponse("Q4869415")));
+            }
+
+            if (uri.Contains("action=query", StringComparison.OrdinalIgnoreCase)
+                && uri.Contains("list=search", StringComparison.OrdinalIgnoreCase)
+                && uri.Contains("Batman", StringComparison.OrdinalIgnoreCase))
+            {
+                return Task.FromResult(TestHttpMessageHandler.Json(TestPayloads.QueryResponse()));
+            }
+
+            if (uri.Contains("action=wbsearchentities", StringComparison.OrdinalIgnoreCase)
+                && uri.Contains("Batman", StringComparison.OrdinalIgnoreCase))
+            {
+                return Task.FromResult(TestHttpMessageHandler.Json(TestPayloads.SearchResponse()));
+            }
+
+            if (uri.Contains("action=wbgetentities", StringComparison.OrdinalIgnoreCase)
+                && uri.Contains("ids=Q2633138", StringComparison.OrdinalIgnoreCase)
+                && uri.Contains("Q4869415", StringComparison.OrdinalIgnoreCase))
+            {
+                return Task.FromResult(TestHttpMessageHandler.Json(TestPayloads.EntityResponse(
+                    TestPayloads.Entity("Q2633138", "Batman", claims: TestPayloads.Claims(
+                        ("P31", "wikibase-item", TestPayloads.ItemDataValue("Q14406742"), "normal"))),
+                    TestPayloads.Entity("Q4869415", "Batman: Gotham Knights", claims: TestPayloads.Claims(
+                        ("P31", "wikibase-item", TestPayloads.ItemDataValue("Q1004"), "normal"))))));
+            }
+
+            if (uri.Contains("action=wbgetentities", StringComparison.OrdinalIgnoreCase)
+                && uri.Contains("ids=Q2633138", StringComparison.OrdinalIgnoreCase))
+            {
+                return Task.FromResult(TestHttpMessageHandler.Json(TestPayloads.EntityResponse(
+                    TestPayloads.Entity("Q2633138", "Batman", claims: TestPayloads.Claims(
+                        ("P31", "wikibase-item", TestPayloads.ItemDataValue("Q14406742"), "normal"))))));
+            }
+
+            throw new InvalidOperationException($"Unexpected request: {uri}");
+        });
+
+        using var reconciler = TestPayloads.CreateReconciler(handler);
+
+        var result = await reconciler.Bridge.ResolveAsync(new BridgeResolutionRequest
+        {
+            CorrelationKey = "batman-405",
+            MediaKind = BridgeMediaKind.ComicSeries,
+            Title = "Batman",
+            SeriesTitle = "Batman",
+            IssueNumber = "405"
+        });
+
+        Assert.True(result.Found);
+        Assert.Equal(BridgeResolutionStrategy.TextSearch, result.MatchedBy);
+        Assert.Equal("Q2633138", result.SelectedCandidate?.Qid);
+        Assert.Contains("type.match", result.SelectedCandidate?.ReasonCodes ?? []);
+        Assert.True(
+            typedSearchOrder.IndexOf("Q14406742") >= 0
+            && typedSearchOrder.IndexOf("Q14406742") < typedSearchOrder.IndexOf("Q1004"),
+            "Comic-series typed search should run before generic comics search.");
+    }
+
+    [Fact]
+    public async Task ResolveAsync_TextFallbackAcceptsGraphicNovelComicSeriesType()
+    {
+        var typedSearches = new List<string>();
+        var handler = new TestHttpMessageHandler((request, _) =>
+        {
+            var uri = Uri.UnescapeDataString(request.RequestUri!.ToString());
+
+            if (uri.Contains("action=query", StringComparison.OrdinalIgnoreCase)
+                && uri.Contains("list=search", StringComparison.OrdinalIgnoreCase)
+                && uri.Contains("Watchmen", StringComparison.OrdinalIgnoreCase)
+                && uri.Contains("haswbstatement:P31=Q3297186", StringComparison.OrdinalIgnoreCase))
+            {
+                typedSearches.Add("Q3297186");
+                return Task.FromResult(TestHttpMessageHandler.Json(TestPayloads.QueryResponse("Q128444")));
+            }
+
+            if (uri.Contains("action=query", StringComparison.OrdinalIgnoreCase)
+                && uri.Contains("list=search", StringComparison.OrdinalIgnoreCase)
+                && uri.Contains("Watchmen", StringComparison.OrdinalIgnoreCase))
+            {
+                return Task.FromResult(TestHttpMessageHandler.Json(TestPayloads.QueryResponse()));
+            }
+
+            if (uri.Contains("action=wbsearchentities", StringComparison.OrdinalIgnoreCase)
+                && uri.Contains("Watchmen", StringComparison.OrdinalIgnoreCase))
+            {
+                return Task.FromResult(TestHttpMessageHandler.Json(TestPayloads.SearchResponse()));
+            }
+
+            if (uri.Contains("action=wbgetentities", StringComparison.OrdinalIgnoreCase)
+                && uri.Contains("ids=Q128444", StringComparison.OrdinalIgnoreCase))
+            {
+                return Task.FromResult(TestHttpMessageHandler.Json(TestPayloads.EntityResponse(
+                    TestPayloads.Entity("Q128444", "Watchmen", claims: TestPayloads.Claims(
+                        ("P31", "wikibase-item", TestPayloads.ItemDataValue("Q3297186"), "normal"),
+                        ("P31", "wikibase-item", TestPayloads.ItemDataValue("Q7725634"), "normal"))))));
+            }
+
+            throw new InvalidOperationException($"Unexpected request: {uri}");
+        });
+
+        using var reconciler = TestPayloads.CreateReconciler(handler);
+
+        var result = await reconciler.Bridge.ResolveAsync(new BridgeResolutionRequest
+        {
+            CorrelationKey = "watchmen-1",
+            MediaKind = BridgeMediaKind.ComicSeries,
+            Title = "Watchmen",
+            SeriesTitle = "Watchmen",
+            IssueNumber = "1"
+        });
+
+        Assert.True(result.Found);
+        Assert.Equal("Q128444", result.SelectedCandidate?.Qid);
+        Assert.Contains("Q3297186", typedSearches);
+        Assert.Contains("type.match", result.SelectedCandidate?.ReasonCodes ?? []);
     }
 
     [Fact]

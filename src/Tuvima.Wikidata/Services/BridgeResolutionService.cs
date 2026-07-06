@@ -17,8 +17,8 @@ public sealed class BridgeResolutionService
         {
             [BridgeMediaKind.Book] = ["Q571", "Q7725634", "Q47461344", "Q3331189"],
             [BridgeMediaKind.Audiobook] = ["Q742421", "Q3331189", "Q571"],
-            [BridgeMediaKind.ComicSeries] = ["Q1004", "Q14406742"],
-            [BridgeMediaKind.ComicIssue] = ["Q1114461", "Q1004"],
+            [BridgeMediaKind.ComicSeries] = ["Q14406742", "Q3297186", "Q21198342", "Q838795", "Q1004"],
+            [BridgeMediaKind.ComicIssue] = ["Q1114461", "Q14406742", "Q3297186", "Q21198342", "Q838795", "Q1004"],
             [BridgeMediaKind.Movie] = ["Q11424"],
             [BridgeMediaKind.TvSeries] = ["Q5398426"],
             [BridgeMediaKind.TvSeason] = ["Q3464665"],

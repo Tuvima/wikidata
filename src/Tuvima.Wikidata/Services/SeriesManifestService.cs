@@ -628,6 +628,28 @@ public sealed class SeriesManifestService
                     Note = "Original The Sandman comic-book run."
                 }
             ],
+            ["Q2633138"] =
+            [
+                new ManifestCountFact
+                {
+                    Kind = "issues",
+                    Count = 713,
+                    Source = "external-reference",
+                    Confidence = 0.85,
+                    Note = "Original Batman comic-book run before the 2011 relaunch."
+                }
+            ],
+            ["Q128444"] =
+            [
+                new ManifestCountFact
+                {
+                    Kind = "issues",
+                    Count = 12,
+                    Source = "external-reference",
+                    Confidence = 0.9,
+                    Note = "Original Watchmen comic-book limited series."
+                }
+            ],
             ["Q91486"] =
             [
                 new ManifestCountFact
