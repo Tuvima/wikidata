@@ -650,6 +650,25 @@ public sealed class SeriesManifestService
                     Note = "Original Watchmen comic-book limited series."
                 }
             ],
+            ["Q3790673"] =
+            [
+                new ManifestCountFact
+                {
+                    Kind = "issues",
+                    Count = 72,
+                    Source = "publisher-release-list",
+                    Confidence = 0.85,
+                    Note = "Saga issues released through issue #72, the latest publisher-listed issue."
+                },
+                new ManifestCountFact
+                {
+                    Kind = "planned_issues",
+                    Count = 108,
+                    Source = "creator-planned-run",
+                    Confidence = 0.75,
+                    Note = "Creator-stated planned complete Saga run."
+                }
+            ],
             ["Q91486"] =
             [
                 new ManifestCountFact

@@ -172,6 +172,22 @@ public class SeriesManifestServiceTests
     }
 
     [Fact]
+    public async Task GetManifestAsync_SagaReturnsReleasedAndPlannedIssueCountFacts()
+    {
+        using var reconciler = CreateReconciler(
+            new()
+            {
+                ["Q3790673"] = Entity("Q3790673", "Saga", Claims(ItemClaim("P31", "Q1004")))
+            });
+
+        var manifest = await reconciler.Series.GetManifestAsync("Q3790673");
+
+        Assert.Equal(WikidataContainerKind.ComicSeries, manifest.ContainerKind);
+        Assert.Contains(manifest.ExpectedCounts, f => f.Kind == "issues" && f.Count == 72);
+        Assert.Contains(manifest.ExpectedCounts, f => f.Kind == "planned_issues" && f.Count == 108);
+    }
+
+    [Fact]
     public async Task GetManifestAsync_AkiraReturnsMangaVolumeAndChapterCountFacts()
     {
         using var reconciler = CreateReconciler(
