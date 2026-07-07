@@ -67,7 +67,7 @@ public sealed class SeriesManifestService
                 SeriesQid = request.SeriesQid,
                 SeriesLabel = seriesEntity?.Label,
                 ContainerKind = containerKind,
-                ExpectedCounts = BuildExpectedCounts(request.SeriesQid, containerKind, []),
+                ExpectedCounts = BuildExpectedCounts(containerKind, []),
                 Items = [],
                 Warnings = warnings.ToList(),
                 Completeness = SeriesManifestCompleteness.Empty
@@ -179,7 +179,7 @@ public sealed class SeriesManifestService
             : await FetchLabelsAsync(relationshipTargets, language, cancellationToken).ConfigureAwait(false);
 
         var manifestItems = sorted.Select(item => ToPublicItem(item, entities, labels, request.IncludeDescriptions)).ToList();
-        var expectedCounts = BuildExpectedCounts(request.SeriesQid, containerKind, manifestItems);
+        var expectedCounts = BuildExpectedCounts(containerKind, manifestItems);
 
         return new SeriesManifestResult
         {
@@ -576,14 +576,10 @@ public sealed class SeriesManifestService
     }
 
     private static IReadOnlyList<ManifestCountFact> BuildExpectedCounts(
-        string seriesQid,
         WikidataContainerKind containerKind,
         IReadOnlyList<SeriesManifestItem> manifestItems)
     {
         var facts = new List<ManifestCountFact>();
-
-        if (KnownSparseCountFacts.TryGetValue(seriesQid, out var knownFacts))
-            facts.AddRange(knownFacts);
 
         if (manifestItems.Count > 0)
         {
@@ -612,82 +608,6 @@ public sealed class SeriesManifestService
             WikidataContainerKind.TvSeason => "episodes",
             WikidataContainerKind.AlbumRelease => "tracks",
             _ => "manifest_items"
-        };
-
-    private static readonly IReadOnlyDictionary<string, IReadOnlyList<ManifestCountFact>> KnownSparseCountFacts =
-        new Dictionary<string, IReadOnlyList<ManifestCountFact>>(StringComparer.OrdinalIgnoreCase)
-        {
-            ["Q827099"] =
-            [
-                new ManifestCountFact
-                {
-                    Kind = "issues",
-                    Count = 75,
-                    Source = "external-reference",
-                    Confidence = 0.9,
-                    Note = "Original The Sandman comic-book run."
-                }
-            ],
-            ["Q2633138"] =
-            [
-                new ManifestCountFact
-                {
-                    Kind = "issues",
-                    Count = 713,
-                    Source = "external-reference",
-                    Confidence = 0.85,
-                    Note = "Original Batman comic-book run before the 2011 relaunch."
-                }
-            ],
-            ["Q128444"] =
-            [
-                new ManifestCountFact
-                {
-                    Kind = "issues",
-                    Count = 12,
-                    Source = "external-reference",
-                    Confidence = 0.9,
-                    Note = "Original Watchmen comic-book limited series."
-                }
-            ],
-            ["Q3790673"] =
-            [
-                new ManifestCountFact
-                {
-                    Kind = "issues",
-                    Count = 72,
-                    Source = "publisher-release-list",
-                    Confidence = 0.85,
-                    Note = "Saga issues released through issue #72, the latest publisher-listed issue."
-                },
-                new ManifestCountFact
-                {
-                    Kind = "planned_issues",
-                    Count = 108,
-                    Source = "creator-planned-run",
-                    Confidence = 0.75,
-                    Note = "Creator-stated planned complete Saga run."
-                }
-            ],
-            ["Q91486"] =
-            [
-                new ManifestCountFact
-                {
-                    Kind = "volumes",
-                    Count = 6,
-                    Source = "external-reference",
-                    Confidence = 0.9,
-                    Note = "Collected Akira manga volumes."
-                },
-                new ManifestCountFact
-                {
-                    Kind = "chapters",
-                    Count = 120,
-                    Source = "external-reference",
-                    Confidence = 0.85,
-                    Note = "Serialized Akira manga chapters."
-                }
-            ]
         };
 
     private static SeriesManifestCompleteness DetermineCompleteness(

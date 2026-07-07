@@ -127,7 +127,7 @@ public class SeriesManifestServiceTests
     }
 
     [Fact]
-    public async Task GetManifestAsync_SandmanReturnsExpectedIssueCountFact()
+    public async Task GetManifestAsync_SparseComicManifestDoesNotSynthesizeTitleSpecificCountFacts()
     {
         using var reconciler = CreateReconciler(
             new()
@@ -138,57 +138,29 @@ public class SeriesManifestServiceTests
         var manifest = await reconciler.Series.GetManifestAsync("Q827099");
 
         Assert.Equal(WikidataContainerKind.ComicSeries, manifest.ContainerKind);
-        Assert.Contains(manifest.ExpectedCounts, f => f.Kind == "issues" && f.Count == 75);
+        Assert.Empty(manifest.ExpectedCounts);
     }
 
     [Fact]
-    public async Task GetManifestAsync_BatmanReturnsExpectedOriginalRunIssueCountFact()
+    public async Task GetManifestAsync_ComicManifestCountsConcreteChildRows()
     {
         using var reconciler = CreateReconciler(
             new()
             {
-                ["Q2633138"] = Entity("Q2633138", "Batman", Claims(ItemClaim("P31", "Q1004")))
-            });
+                ["QComicSeries"] = Entity("QComicSeries", "Comic Run", Claims(ItemClaim("P31", "Q1004"))),
+                ["QIssue1"] = Entity("QIssue1", "Issue 1", Claims(ItemClaim("P179", "QComicSeries", "1"))),
+                ["QIssue2"] = Entity("QIssue2", "Issue 2", Claims(ItemClaim("P179", "QComicSeries", "2")))
+            },
+            p179: ["QIssue2", "QIssue1"]);
 
-        var manifest = await reconciler.Series.GetManifestAsync("Q2633138");
+        var manifest = await reconciler.Series.GetManifestAsync("QComicSeries");
 
         Assert.Equal(WikidataContainerKind.ComicSeries, manifest.ContainerKind);
-        Assert.Contains(manifest.ExpectedCounts, f => f.Kind == "issues" && f.Count == 713);
+        Assert.Contains(manifest.ExpectedCounts, f => f.Kind == "issues" && f.Count == 2);
     }
 
     [Fact]
-    public async Task GetManifestAsync_WatchmenReturnsExpectedLimitedSeriesIssueCountFact()
-    {
-        using var reconciler = CreateReconciler(
-            new()
-            {
-                ["Q128444"] = Entity("Q128444", "Watchmen", Claims(ItemClaim("P31", "Q3297186")))
-            });
-
-        var manifest = await reconciler.Series.GetManifestAsync("Q128444");
-
-        Assert.Equal(WikidataContainerKind.ComicSeries, manifest.ContainerKind);
-        Assert.Contains(manifest.ExpectedCounts, f => f.Kind == "issues" && f.Count == 12);
-    }
-
-    [Fact]
-    public async Task GetManifestAsync_SagaReturnsReleasedAndPlannedIssueCountFacts()
-    {
-        using var reconciler = CreateReconciler(
-            new()
-            {
-                ["Q3790673"] = Entity("Q3790673", "Saga", Claims(ItemClaim("P31", "Q1004")))
-            });
-
-        var manifest = await reconciler.Series.GetManifestAsync("Q3790673");
-
-        Assert.Equal(WikidataContainerKind.ComicSeries, manifest.ContainerKind);
-        Assert.Contains(manifest.ExpectedCounts, f => f.Kind == "issues" && f.Count == 72);
-        Assert.Contains(manifest.ExpectedCounts, f => f.Kind == "planned_issues" && f.Count == 108);
-    }
-
-    [Fact]
-    public async Task GetManifestAsync_AkiraReturnsMangaVolumeAndChapterCountFacts()
+    public async Task GetManifestAsync_SparseMangaManifestDoesNotSynthesizeTitleSpecificCountFacts()
     {
         using var reconciler = CreateReconciler(
             new()
@@ -199,8 +171,7 @@ public class SeriesManifestServiceTests
         var manifest = await reconciler.Series.GetManifestAsync("Q91486");
 
         Assert.Equal(WikidataContainerKind.MangaSeries, manifest.ContainerKind);
-        Assert.Contains(manifest.ExpectedCounts, f => f.Kind == "volumes" && f.Count == 6);
-        Assert.Contains(manifest.ExpectedCounts, f => f.Kind == "chapters" && f.Count == 120);
+        Assert.Empty(manifest.ExpectedCounts);
     }
 
     [Fact]
