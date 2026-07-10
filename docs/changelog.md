@@ -1,5 +1,14 @@
 # Changelog
 
+## v3.5.0
+
+Backward-compatible series-manifest scope release.
+
+- Added `SeriesManifestItemScope` and `SeriesManifestItem.MembershipScope`, including an `Unpositioned` state for ambiguous direct members beside a positioned main run.
+- Added `ManifestCountFact.Scope` and now emits independent counts for main-sequence, supplementary, collected-content, and broader-context rows.
+- Incoming P179 and direct P527 rows are main-sequence members; incoming P361 rows are supplementary; expanded P527 children are collected content; explicitly requested P8345 members are broader context.
+- Raw and parsed Wikidata ordinals remain unchanged, including decimals, while unnumbered supplemental items remain unnumbered.
+
 ## v3.2.0
 
 Additive release improving ingestion-oriented bridge and person matching.

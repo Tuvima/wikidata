@@ -15,6 +15,9 @@ public sealed class ManifestCountFact
     /// <summary>The expected total count for <see cref="Kind"/>.</summary>
     public int Count { get; init; }
 
+    /// <summary>The membership scope counted by this fact.</summary>
+    public SeriesManifestItemScope Scope { get; init; } = SeriesManifestItemScope.MainSequence;
+
     /// <summary>Where the count was sourced from.</summary>
     public string? Source { get; init; }
 

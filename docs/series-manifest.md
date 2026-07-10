@@ -10,6 +10,7 @@ var manifest = await reconciler.Series.GetManifestAsync("Q19610143"); // The Exp
 foreach (var item in manifest.Items)
 {
     Console.WriteLine($"{item.RawSeriesOrdinal}: {item.Label} ({item.OrderSource})");
+    Console.WriteLine($"  scope: {item.MembershipScope}");
     Console.WriteLine($"  source: {string.Join(", ", item.SourceProperties)}");
 }
 ```
@@ -47,9 +48,21 @@ var manifest = await reconciler.Series.GetManifestAsync(new SeriesManifestReques
 
 Collection expansion is factual only: if a discovered item has P527 children, it is treated as collection-like and can be expanded. The library does not decide whether short fiction should be collapsed, hidden, or displayed as missing; consuming applications own that product behavior.
 
+Each row has a structural `MembershipScope` derived from its relationship path:
+
+| Scope | Relationship meaning |
+|---|---|
+| `MainSequence` | Incoming P179 or direct outgoing P527 membership |
+| `Supplementary` | Incoming P361 membership, such as short fiction attached to a larger series |
+| `CollectedContent` | A P527 child reached by expanding a collection or anthology |
+| `BroaderContext` | An explicitly requested franchise member reached through P8345 |
+| `Unpositioned` | A direct series member without ordinal or chain evidence when the same container has a positioned main sequence |
+
+These scopes are factual classifications, not title heuristics. A consumer can show all related works while using only `MainSequence` count facts for labels such as “3 films” or “9 novels.”
+
 The service classifies the requested container before traversing it. Ordered series, album releases, TV shows/seasons, comic series, and manga series are sequence-compatible containers. Franchises, universes, Wikimedia list articles, and publisher/production lists are reported as their own `ContainerKind`; they are not treated as immediate ordered series by default. Set `IncludeFranchiseMembers = true` only when the caller explicitly wants franchise expansion.
 
-`SeriesManifestResult.ExpectedCounts` reports count facts separately from concrete manifest rows. This lets callers preserve sparse external knowledge such as issue, volume, chapter, episode, or track totals without inventing missing child entities.
+`SeriesManifestResult.ExpectedCounts` reports count facts separately from concrete manifest rows, and every fact carries the scope it counts. This lets callers preserve sparse external knowledge such as issue, volume, chapter, episode, or track totals without inventing missing child entities or allowing supplemental works to inflate the main total.
 
 ## Ordering Confidence
 
@@ -64,7 +77,7 @@ Each `SeriesManifestItem.OrderSource` explains the strongest evidence used for o
 | `Mixed` | item was ordered with fallback evidence in a mixed-evidence manifest |
 | `Unknown` | no useful ordering evidence was available |
 
-`RawSeriesOrdinal` preserves the original Wikidata qualifier value. `ParsedSeriesOrdinal` is populated when the value can be parsed as a decimal, so values like `0.1`, `1.5`, `6.5`, and `9.5` sort correctly while string ordinals remain safe to inspect.
+`RawSeriesOrdinal` preserves the original Wikidata qualifier value. `ParsedSeriesOrdinal` is populated when the value can be parsed as a decimal, so values like `0.1`, `1.5`, `6.5`, and `9.5` sort correctly while string ordinals remain safe to inspect. `OrdinalScopeQid` identifies the container that supplied that ordinal; for example, position 4 inside an anthology must not be presented as book 4 of the broader series.
 
 ## Warnings
 

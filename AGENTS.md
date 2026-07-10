@@ -8,7 +8,7 @@ Two NuGet packages:
 - `Tuvima.Wikidata` — core library, zero external dependencies
 - `Tuvima.Wikidata.AspNetCore` — W3C Reconciliation API middleware for ASP.NET Core
 
-## Architecture (v3.2.0)
+## Architecture (v3.5.0)
 
 `WikidataReconciler` is a thin **facade** that owns a shared `ReconcilerContext` (HttpClient, options, search/fetcher/scorer/type-checker collaborators, shared provider-safe HTTP pipeline, response cache hook, diagnostics, and per-host limiters) and exposes focused **sub-services** as properties:
 
@@ -103,7 +103,8 @@ src/
 │   ├── PersonSearchResult.cs                # Persons.SearchAsync output: Found, Qid, CanonicalName, IsGroup, Score, Occupations, NotableWorks, GroupMembers (v2.1)
 │   ├── SeriesManifestRequest.cs             # Series manifest input: SeriesQid, language, collection expansion, caps (v3.0.1)
 │   ├── SeriesManifestResult.cs              # Ordered manifest output with items, warnings, completeness (v3.0.1)
-│   ├── SeriesManifestItem.cs                # Per-work row with ordinal/date/chain evidence and provenance (v3.0.1)
+│   ├── SeriesManifestItem.cs                # Per-work row with ordinal/date/chain evidence, membership scope, and provenance (v3.5)
+│   ├── SeriesManifestItemScope.cs           # MainSequence, Supplementary, CollectedContent, BroaderContext, Unpositioned (v3.5)
 │   ├── SeriesManifestRelationship.cs        # Relationship evidence for why a manifest item was included (v3.0.1)
 │   ├── SeriesManifestWarning.cs             # Non-fatal series data warnings (v3.0.1)
 │   ├── SeriesManifestOrderSource.cs         # Ordering source enum (v3.0.1)
@@ -291,6 +292,7 @@ Key design notes:
 
 Key design notes:
 - Combines incoming P179, incoming P361, incoming P8345, outgoing P527, and optional P527 collection expansion.
+- Classifies every manifest row structurally as `MainSequence`, `Supplementary`, `CollectedContent`, `BroaderContext`, or `Unpositioned`; count facts carry the same scope so consumers do not count all relationship paths as one sequence.
 - Orders by P1545 series ordinal, then P155/P156 chain, then P577 publication date, then label fallback.
 - Preserves raw and parsed decimal ordinals, source properties, relationship provenance, collection parents, warnings, and completeness.
 - The library stays factual and does not decide owned/missing UI behavior.

@@ -23,6 +23,7 @@ public class SeriesManifestServiceTests
         Assert.Equal("1", manifest.Items[0].RawSeriesOrdinal);
         Assert.Equal(SeriesManifestOrderSource.SeriesOrdinal, manifest.Items[0].OrderSource);
         Assert.Contains("P179", manifest.Items[0].SourceProperties);
+        Assert.All(manifest.Items, item => Assert.Equal(SeriesManifestItemScope.MainSequence, item.MembershipScope));
     }
 
     [Fact]
@@ -41,7 +42,30 @@ public class SeriesManifestServiceTests
         var item = Assert.Single(manifest.Items);
         Assert.Equal("Q1", item.Qid);
         Assert.Equal(["P361"], item.SourceProperties);
+        Assert.Equal(SeriesManifestItemScope.Supplementary, item.MembershipScope);
         Assert.Contains(item.Relationships, r => r.PropertyId == "P361" && r.TargetQid == "QSeries" && r.Direction == "Outgoing");
+        Assert.Contains(manifest.ExpectedCounts, fact =>
+            fact.Scope == SeriesManifestItemScope.Supplementary && fact.Count == 1);
+    }
+
+    [Fact]
+    public async Task GetManifestAsync_UnpositionedDirectMember_DoesNotInflatePositionedMainSequence()
+    {
+        using var reconciler = CreateReconciler(
+            new()
+            {
+                ["QSeries"] = Entity("QSeries", "Series"),
+                ["Q1"] = Entity("Q1", "Book One", Claims(ItemClaim("P179", "QSeries", "1"))),
+                ["Q2"] = Entity("Q2", "Book Two", Claims(ItemClaim("P179", "QSeries", "2"))),
+                ["QExtra"] = Entity("QExtra", "Unnumbered novella", Claims(ItemClaim("P179", "QSeries")))
+            },
+            p179: ["QExtra", "Q2", "Q1"]);
+
+        var manifest = await reconciler.Series.GetManifestAsync("QSeries");
+
+        Assert.Equal(SeriesManifestItemScope.Unpositioned, Assert.Single(manifest.Items, item => item.Qid == "QExtra").MembershipScope);
+        Assert.Contains(manifest.ExpectedCounts, fact => fact.Scope == SeriesManifestItemScope.MainSequence && fact.Count == 2);
+        Assert.Contains(manifest.ExpectedCounts, fact => fact.Scope == SeriesManifestItemScope.Unpositioned && fact.Count == 1);
     }
 
     [Fact]
@@ -83,6 +107,7 @@ public class SeriesManifestServiceTests
 
         Assert.Equal(["Q1", "Q2"], manifest.Items.Select(i => i.Qid));
         Assert.All(manifest.Items, item => Assert.Contains("P8345", item.SourceProperties));
+        Assert.All(manifest.Items, item => Assert.Equal(SeriesManifestItemScope.BroaderContext, item.MembershipScope));
         Assert.Contains(manifest.Items[0].Relationships, r => r.PropertyId == "P8345" && r.TargetQid == "QSeries" && r.Direction == "Outgoing");
         Assert.All(manifest.Items, item => Assert.Equal(SeriesManifestOrderSource.PreviousNextChain, item.OrderSource));
     }
@@ -212,6 +237,10 @@ public class SeriesManifestServiceTests
         Assert.True(child.IsExpandedFromCollection);
         Assert.Equal("QCollection", child.ParentCollectionQid);
         Assert.Equal("Omnibus", child.ParentCollectionLabel);
+        Assert.Equal(SeriesManifestItemScope.CollectedContent, child.MembershipScope);
+        Assert.Equal(
+            SeriesManifestItemScope.MainSequence,
+            Assert.Single(manifest.Items, i => i.Qid == "QCollection").MembershipScope);
     }
 
     [Fact]

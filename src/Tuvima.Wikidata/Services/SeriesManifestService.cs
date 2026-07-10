@@ -101,13 +101,13 @@ public sealed class SeriesManifestService
         await Task.WhenAll(p179Task, p361Task, p8345Task).ConfigureAwait(false);
 
         foreach (var qid in await p179Task.ConfigureAwait(false))
-            AddDiscovery(discovered, pendingFetch, qid, PartOfSeries, request.SeriesQid, null, null, null, warnings);
+            AddDiscovery(discovered, pendingFetch, qid, PartOfSeries, request.SeriesQid, null, null, null, SeriesManifestItemScope.MainSequence, warnings);
 
         foreach (var qid in await p361Task.ConfigureAwait(false))
-            AddDiscovery(discovered, pendingFetch, qid, PartOf, request.SeriesQid, null, null, null, warnings);
+            AddDiscovery(discovered, pendingFetch, qid, PartOf, request.SeriesQid, null, null, null, SeriesManifestItemScope.Supplementary, warnings);
 
         foreach (var qid in await p8345Task.ConfigureAwait(false))
-            AddDiscovery(discovered, pendingFetch, qid, Franchise, request.SeriesQid, null, null, null, warnings);
+            AddDiscovery(discovered, pendingFetch, qid, Franchise, request.SeriesQid, null, null, null, SeriesManifestItemScope.BroaderContext, warnings);
 
         if (seriesEntity is not null)
         {
@@ -126,6 +126,7 @@ public sealed class SeriesManifestService
                     parentCollectionQid: null,
                     parentCollectionLabel: null,
                     ordinalFromParent: GetFirstQualifierRaw(claim, SeriesOrdinal),
+                    scope: SeriesManifestItemScope.MainSequence,
                     warnings);
             }
         }
@@ -157,6 +158,7 @@ public sealed class SeriesManifestService
         }
 
         HydrateEvidence(visible, entities, request.SeriesQid, request.IncludePublicationDate);
+        RefineUnpositionedMembers(visible);
         AddOrderingWarnings(visible, warnings);
 
         var sorted = SortAndAssignOrderSources(visible, warnings);
@@ -242,6 +244,7 @@ public sealed class SeriesManifestService
                         parentCollectionQid: parentQid,
                         parentCollectionLabel: parent.Label,
                         ordinalFromParent: GetFirstQualifierRaw(claim, SeriesOrdinal),
+                        scope: SeriesManifestItemScope.CollectedContent,
                         warnings);
                 }
             }
@@ -299,6 +302,7 @@ public sealed class SeriesManifestService
         string? parentCollectionQid,
         string? parentCollectionLabel,
         string? ordinalFromParent,
+        SeriesManifestItemScope scope,
         WarningCollector warnings)
     {
         if (!discovered.TryGetValue(qid, out var item))
@@ -313,6 +317,7 @@ public sealed class SeriesManifestService
         }
 
         item.SourceProperties.Add(sourceProperty);
+        item.MembershipScopes.Add(scope);
         item.DiscoveryTargets.Add((sourceProperty, sourceTargetQid));
         if (!string.IsNullOrWhiteSpace(parentCollectionQid))
         {
@@ -322,7 +327,12 @@ public sealed class SeriesManifestService
         }
 
         if (!string.IsNullOrWhiteSpace(ordinalFromParent))
+        {
             item.OrdinalCandidates.Add(ordinalFromParent);
+            item.OrdinalScopes.TryAdd(ordinalFromParent, sourceTargetQid);
+            if (scope == SeriesManifestItemScope.MainSequence)
+                item.MainSequenceOrdinalCandidates.Add(ordinalFromParent);
+        }
     }
 
     private static void HydrateEvidence(
@@ -349,7 +359,15 @@ public sealed class SeriesManifestService
             {
                 var ordinal = GetOrdinalForTarget(entity, propertyId, targetQid);
                 if (!string.IsNullOrWhiteSpace(ordinal))
+                {
                     item.OrdinalCandidates.Add(ordinal);
+                    item.OrdinalScopes.TryAdd(ordinal, targetQid);
+                    if (string.Equals(targetQid, seriesQid, StringComparison.OrdinalIgnoreCase)
+                        && propertyId is PartOfSeries or HasPart)
+                    {
+                        item.MainSequenceOrdinalCandidates.Add(ordinal);
+                    }
+                }
             }
 
             foreach (var propertyId in RelationshipProperties)
@@ -383,6 +401,10 @@ public sealed class SeriesManifestService
                 .Distinct(StringComparer.OrdinalIgnoreCase)
                 .ToList();
             item.RawSeriesOrdinal = distinctOrdinals.FirstOrDefault();
+            item.OrdinalScopeQid = item.RawSeriesOrdinal is not null
+                && item.OrdinalScopes.TryGetValue(item.RawSeriesOrdinal, out var ordinalScopeQid)
+                    ? ordinalScopeQid
+                    : null;
             item.HasConflictingOrdinals = distinctOrdinals.Count > 1;
             item.ParsedSeriesOrdinal = TryParseOrdinal(item.RawSeriesOrdinal);
 
@@ -404,6 +426,28 @@ public sealed class SeriesManifestService
 
         foreach (var item in items.Where(item => item.HasBrokenPreviousNext))
             warnings.Add("BrokenPreviousNextChain", $"Item {item.Qid} has a P155/P156 link outside the manifest candidate set.", item.Qid);
+    }
+
+    private static void RefineUnpositionedMembers(IReadOnlyList<DiscoveredItem> items)
+    {
+        var hasPositionedMainSequence = items.Any(item =>
+            !item.IsCollection
+            && item.MembershipScopes.Contains(SeriesManifestItemScope.MainSequence)
+            && item.MainSequenceOrdinalCandidates.Count > 0);
+        if (!hasPositionedMainSequence)
+            return;
+
+        foreach (var item in items.Where(item =>
+                     !item.IsCollection
+                     && item.MembershipScopes.Contains(SeriesManifestItemScope.MainSequence)
+                     && item.MainSequenceOrdinalCandidates.Count == 0
+                     && string.IsNullOrWhiteSpace(item.PreviousQid)
+                     && string.IsNullOrWhiteSpace(item.NextQid)))
+        {
+            item.MembershipScopes.Remove(SeriesManifestItemScope.MainSequence);
+            if (item.MembershipScopes.Count == 0)
+                item.MembershipScopes.Add(SeriesManifestItemScope.Unpositioned);
+        }
     }
 
     private static List<DiscoveredItem> SortAndAssignOrderSources(
@@ -554,6 +598,7 @@ public sealed class SeriesManifestService
             Description = includeDescription ? item.Description : null,
             RawSeriesOrdinal = item.RawSeriesOrdinal,
             ParsedSeriesOrdinal = item.ParsedSeriesOrdinal,
+            OrdinalScopeQid = item.OrdinalScopeQid,
             PublicationDate = item.PublicationDate,
             PreviousQid = item.PreviousQid,
             NextQid = item.NextQid,
@@ -561,6 +606,7 @@ public sealed class SeriesManifestService
             ParentCollectionLabel = item.ParentCollectionLabel ?? (item.ParentCollectionQid is null ? null : LabelFor(item.ParentCollectionQid)),
             IsCollection = item.IsCollection,
             IsExpandedFromCollection = item.IsExpandedFromCollection,
+            MembershipScope = ResolveMembershipScope(item.MembershipScopes),
             SourceProperties = item.SourceProperties.OrderBy(p => p, StringComparer.OrdinalIgnoreCase).ToList(),
             OrderSource = item.OrderSource,
             Relationships = item.Relationships
@@ -581,20 +627,23 @@ public sealed class SeriesManifestService
     {
         var facts = new List<ManifestCountFact>();
 
-        if (manifestItems.Count > 0)
+        foreach (var scopeGroup in manifestItems
+                     .Where(item => !item.IsCollection)
+                     .GroupBy(item => item.MembershipScope))
         {
             facts.Add(new ManifestCountFact
             {
                 Kind = CountKindForContainer(containerKind),
-                Count = manifestItems.Count,
+                Count = scopeGroup.Count(),
+                Scope = scopeGroup.Key,
                 Source = "wikidata-manifest-rows",
                 Confidence = 0.7,
-                Note = "Concrete child rows discovered in Wikidata traversal."
+                Note = $"Concrete {scopeGroup.Key} rows discovered in Wikidata traversal."
             });
         }
 
         return facts
-            .GroupBy(fact => $"{fact.Kind}|{fact.Count}|{fact.Source}", StringComparer.OrdinalIgnoreCase)
+            .GroupBy(fact => $"{fact.Kind}|{fact.Scope}|{fact.Count}|{fact.Source}", StringComparer.OrdinalIgnoreCase)
             .Select(group => group.First())
             .ToList();
     }
@@ -609,6 +658,20 @@ public sealed class SeriesManifestService
             WikidataContainerKind.AlbumRelease => "tracks",
             _ => "manifest_items"
         };
+
+    private static SeriesManifestItemScope ResolveMembershipScope(
+        IReadOnlySet<SeriesManifestItemScope> scopes)
+    {
+        if (scopes.Contains(SeriesManifestItemScope.MainSequence))
+            return SeriesManifestItemScope.MainSequence;
+        if (scopes.Contains(SeriesManifestItemScope.Supplementary))
+            return SeriesManifestItemScope.Supplementary;
+        if (scopes.Contains(SeriesManifestItemScope.CollectedContent))
+            return SeriesManifestItemScope.CollectedContent;
+        if (scopes.Contains(SeriesManifestItemScope.Unpositioned))
+            return SeriesManifestItemScope.Unpositioned;
+        return SeriesManifestItemScope.BroaderContext;
+    }
 
     private static SeriesManifestCompleteness DetermineCompleteness(
         IReadOnlyList<SeriesManifestItem> items,
@@ -696,6 +759,7 @@ public sealed class SeriesManifestService
         public string? Description { get; set; }
         public string? RawSeriesOrdinal { get; set; }
         public decimal? ParsedSeriesOrdinal { get; set; }
+        public string? OrdinalScopeQid { get; set; }
         public DateOnly? PublicationDate { get; set; }
         public string? PreviousQid { get; set; }
         public string? NextQid { get; set; }
@@ -707,8 +771,11 @@ public sealed class SeriesManifestService
         public bool HasBrokenPreviousNext { get; set; }
         public SeriesManifestOrderSource OrderSource { get; set; } = SeriesManifestOrderSource.Unknown;
         public HashSet<string> SourceProperties { get; } = new(StringComparer.OrdinalIgnoreCase);
+        public HashSet<SeriesManifestItemScope> MembershipScopes { get; } = [];
         public List<(string PropertyId, string TargetQid)> DiscoveryTargets { get; } = [];
         public List<string> OrdinalCandidates { get; } = [];
+        public Dictionary<string, string> OrdinalScopes { get; } = new(StringComparer.OrdinalIgnoreCase);
+        public HashSet<string> MainSequenceOrdinalCandidates { get; } = new(StringComparer.OrdinalIgnoreCase);
         public List<RelationshipEvidence> Relationships { get; set; } = [];
     }
 

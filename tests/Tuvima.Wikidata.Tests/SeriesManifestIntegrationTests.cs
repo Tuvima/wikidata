@@ -12,7 +12,7 @@ public class SeriesManifestIntegrationTests : IDisposable
     {
         _reconciler = new WikidataReconciler(new WikidataReconcilerOptions
         {
-            UserAgent = "Tuvima.Wikidata.Tests/3.0.1 (https://github.com/Tuvima/wikidata)"
+            UserAgent = "Tuvima.Wikidata.Tests/3.5.0 (https://github.com/Tuvima/wikidata)"
         });
     }
 
@@ -29,6 +29,15 @@ public class SeriesManifestIntegrationTests : IDisposable
         Assert.NotEmpty(manifest.Items);
         Assert.Contains(manifest.Items, item => item.Label?.Contains("Leviathan Wakes", StringComparison.OrdinalIgnoreCase) == true);
         Assert.Contains(manifest.Items, item => item.Label?.Contains("Caliban", StringComparison.OrdinalIgnoreCase) == true);
+        Assert.Contains(manifest.Items, item =>
+            item.Label?.Contains("The Churn", StringComparison.OrdinalIgnoreCase) == true
+            && item.MembershipScope == SeriesManifestItemScope.Supplementary);
+        Assert.True(
+            manifest.ExpectedCounts.Any(fact =>
+                fact.Scope == SeriesManifestItemScope.MainSequence
+                && fact.Count == 9),
+            string.Join(" | ", manifest.Items.Select(item =>
+                $"{item.Qid}:{item.Label}:{item.MembershipScope}:{item.RawSeriesOrdinal}:{string.Join(',', item.SourceProperties)}")));
         Assert.All(manifest.Items, item => Assert.NotEmpty(item.SourceProperties));
         Assert.True(
             manifest.Items.Any(item => item.IsExpandedFromCollection || item.IsCollection || item.Relationships.Count > 0) ||
