@@ -11,6 +11,7 @@ foreach (var item in manifest.Items)
 {
     Console.WriteLine($"{item.RawSeriesOrdinal}: {item.Label} ({item.OrderSource})");
     Console.WriteLine($"  scope: {item.MembershipScope}");
+    Console.WriteLine($"  media: {item.MediaKind} ({string.Join(", ", item.InstanceOfQids)})");
     Console.WriteLine($"  source: {string.Join(", ", item.SourceProperties)}");
 }
 ```
@@ -59,6 +60,10 @@ Each row has a structural `MembershipScope` derived from its relationship path:
 | `Unpositioned` | A direct series member without ordinal or chain evidence when the same container has a positioned main sequence |
 
 These scopes are factual classifications, not title heuristics. A consumer can show all related works while using only `MainSequence` count facts for labels such as “3 films” or “9 novels.”
+
+When one entity is discovered both directly and through an expanded collection, a root-scoped ordinal keeps it in `MainSequence`. Without root-scoped ordering evidence, the expanded path remains `CollectedContent`; an ordinal belonging to the nested collection is never promoted to the requested parent series.
+
+Each row also exposes `InstanceOfQids` and `MediaKind`. These values come from the member entity itself, so consumers can distinguish different media entities that share a label without inheriting the requested container's media type or using title allowlists.
 
 The service classifies the requested container before traversing it. Ordered series, album releases, TV shows/seasons, comic series, and manga series are sequence-compatible containers. Franchises, universes, Wikimedia list articles, and publisher/production lists are reported as their own `ContainerKind`; they are not treated as immediate ordered series by default. Set `IncludeFranchiseMembers = true` only when the caller explicitly wants franchise expansion.
 

@@ -244,6 +244,73 @@ public class SeriesManifestServiceTests
     }
 
     [Fact]
+    public async Task GetManifestAsync_ExpandedChildWithoutRootOrdinal_RemainsCollectedContent()
+    {
+        using var reconciler = CreateReconciler(
+            new()
+            {
+                ["QSeries"] = Entity("QSeries", "Series", Claims(ItemClaim("P527", "QVolume", "1"))),
+                ["QVolume"] = Entity("QVolume", "Volume", Claims(ItemClaim("P527", "QNested", "2"))),
+                ["QNested"] = Entity("QNested", "Nested work", Claims(ItemClaim("P179", "QSeries")))
+            },
+            p179: ["QNested"]);
+
+        var manifest = await reconciler.Series.GetManifestAsync("QSeries");
+
+        var nested = Assert.Single(manifest.Items, item => item.Qid == "QNested");
+        Assert.Equal(SeriesManifestItemScope.CollectedContent, nested.MembershipScope);
+        Assert.Equal("QVolume", nested.OrdinalScopeQid);
+        Assert.Equal("2", nested.RawSeriesOrdinal);
+    }
+
+    [Fact]
+    public async Task GetManifestAsync_ExpandedChildWithRootOrdinal_RemainsMainSequence()
+    {
+        using var reconciler = CreateReconciler(
+            new()
+            {
+                ["QSeries"] = Entity("QSeries", "Series", Claims(ItemClaim("P527", "QVolume", "1"))),
+                ["QVolume"] = Entity("QVolume", "Volume", Claims(ItemClaim("P527", "QNested", "7"))),
+                ["QNested"] = Entity("QNested", "Direct work", Claims(ItemClaim("P179", "QSeries", "2")))
+            },
+            p179: ["QNested"]);
+
+        var manifest = await reconciler.Series.GetManifestAsync("QSeries");
+
+        var nested = Assert.Single(manifest.Items, item => item.Qid == "QNested");
+        Assert.Equal(SeriesManifestItemScope.MainSequence, nested.MembershipScope);
+        Assert.Equal("QSeries", nested.OrdinalScopeQid);
+        Assert.Equal("2", nested.RawSeriesOrdinal);
+    }
+
+    [Fact]
+    public async Task GetManifestAsync_ClassifiesSameLabelMembersFromTheirOwnTypes()
+    {
+        using var reconciler = CreateReconciler(
+            new()
+            {
+                ["QSeries"] = Entity("QSeries", "Series"),
+                ["QBook"] = Entity("QBook", "Shared title", Claims(
+                    ItemClaim("P179", "QSeries", "1"),
+                    ItemClaim("P31", "Q571"))),
+                ["QPlay"] = Entity("QPlay", "Shared title", Claims(
+                    ItemClaim("P179", "QSeries"),
+                    ItemClaim("P31", "Q25379")))
+            },
+            p179: ["QPlay", "QBook"]);
+
+        var manifest = await reconciler.Series.GetManifestAsync("QSeries");
+
+        var book = Assert.Single(manifest.Items, item => item.Qid == "QBook");
+        Assert.Equal(SeriesManifestMediaKind.LiteraryWork, book.MediaKind);
+        Assert.Equal(["Q571"], book.InstanceOfQids);
+
+        var play = Assert.Single(manifest.Items, item => item.Qid == "QPlay");
+        Assert.Equal(SeriesManifestMediaKind.StageWork, play.MediaKind);
+        Assert.Equal(["Q25379"], play.InstanceOfQids);
+    }
+
+    [Fact]
     public async Task GetManifestAsync_IncludeCollectionsFalse_OmitsCollectionRows()
     {
         using var reconciler = CreateReconciler(

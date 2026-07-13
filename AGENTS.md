@@ -8,7 +8,7 @@ Two NuGet packages:
 - `Tuvima.Wikidata` — core library, zero external dependencies
 - `Tuvima.Wikidata.AspNetCore` — W3C Reconciliation API middleware for ASP.NET Core
 
-## Architecture (v3.5.0)
+## Architecture (v3.6.0)
 
 `WikidataReconciler` is a thin **facade** that owns a shared `ReconcilerContext` (HttpClient, options, search/fetcher/scorer/type-checker collaborators, shared provider-safe HTTP pipeline, response cache hook, diagnostics, and per-host limiters) and exposes focused **sub-services** as properties:
 
@@ -295,6 +295,8 @@ Key design notes:
 - Classifies every manifest row structurally as `MainSequence`, `Supplementary`, `CollectedContent`, `BroaderContext`, or `Unpositioned`; count facts carry the same scope so consumers do not count all relationship paths as one sequence.
 - Orders by P1545 series ordinal, then P155/P156 chain, then P577 publication date, then label fallback.
 - Preserves raw and parsed decimal ordinals, source properties, relationship provenance, collection parents, warnings, and completeness.
+- Exposes every member's own `MediaKind` and direct P31 `InstanceOfQids`; consumers must not infer a row's media kind from the requested container.
+- When an item is discovered through direct and expanded paths, only ordering evidence scoped to the requested series can promote it to `MainSequence`.
 - The library stays factual and does not decide owned/missing UI behavior.
 
 ### `reconciler.Diagnostics` — `WikidataDiagnostics` (v2.6)

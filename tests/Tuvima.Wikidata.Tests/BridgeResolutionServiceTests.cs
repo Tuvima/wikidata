@@ -67,8 +67,8 @@ public class BridgeResolutionServiceTests
     [Fact]
     public void WikidataLibraryInfo_ExposesPackageVersion()
     {
-        Assert.StartsWith("3.5.0", WikidataLibraryInfo.PackageVersion, StringComparison.Ordinal);
-        Assert.StartsWith("3.5.0", WikidataReconciler.LibraryVersion, StringComparison.Ordinal);
+        Assert.StartsWith("3.6.0", WikidataLibraryInfo.PackageVersion, StringComparison.Ordinal);
+        Assert.StartsWith("3.6.0", WikidataReconciler.LibraryVersion, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -428,6 +428,47 @@ public class BridgeResolutionServiceTests
         Assert.Equal("Q99601314", series.SeriesQid);
         Assert.Equal(WikidataContainerKind.OrderedSeries, series.ContainerKind);
         Assert.True(series.IsImmediateSeries);
+    }
+
+    [Fact]
+    public async Task ResolveAsync_UnknownP179ContainerWithoutOrderingEvidence_IsNotImmediate()
+    {
+        var handler = new TestHttpMessageHandler((request, _) =>
+        {
+            var uri = Uri.UnescapeDataString(request.RequestUri!.ToString());
+
+            if (uri.Contains("haswbstatement:P345=tt0000001", StringComparison.OrdinalIgnoreCase))
+                return Task.FromResult(TestHttpMessageHandler.Json(TestPayloads.QueryResponse("QWork")));
+
+            if (uri.Contains("action=wbgetentities", StringComparison.OrdinalIgnoreCase))
+            {
+                var entities = new[]
+                {
+                    TestPayloads.Entity("QWork", "A work", claims: TestPayloads.Claims(
+                        ("P31", "wikibase-item", TestPayloads.ItemDataValue("Q11424"), "normal"),
+                        ("P345", "external-id", TestPayloads.StringDataValue("tt0000001"), "normal"),
+                        ("P179", "wikibase-item", TestPayloads.ItemDataValue("QBroad"), "normal"))),
+                    TestPayloads.Entity("QBroad", "Broad context")
+                };
+
+                return Task.FromResult(TestHttpMessageHandler.Json(TestPayloads.EntityResponse(entities)));
+            }
+
+            throw new InvalidOperationException($"Unexpected request: {uri}");
+        });
+
+        using var reconciler = TestPayloads.CreateReconciler(handler);
+
+        var result = await reconciler.Bridge.ResolveAsync(new BridgeResolutionRequest
+        {
+            CorrelationKey = "work",
+            MediaKind = BridgeMediaKind.Movie,
+            BridgeIds = new Dictionary<string, string> { ["imdb_id"] = "tt0000001" }
+        });
+
+        var series = Assert.Single(result.Series);
+        Assert.Equal(WikidataContainerKind.Unknown, series.ContainerKind);
+        Assert.False(series.IsImmediateSeries);
     }
 
     [Fact]

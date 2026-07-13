@@ -897,9 +897,13 @@ public sealed class BridgeResolutionService
         var kind = container is not null
             ? WikidataContainerClassifier.Classify(container)
             : WikidataContainerClassifier.Classify(label, null, null);
-        var isImmediateSeries = sourcePropertyId == "P179"
-            ? !WikidataContainerClassifier.IsRejectedShelfKind(kind)
-            : WikidataContainerClassifier.IsImmediateSeriesKind(kind);
+        var hasOrderingEvidence = !string.IsNullOrWhiteSpace(position)
+            || !string.IsNullOrWhiteSpace(GetFirstEntityId(sourceEntity, "P155"))
+            || !string.IsNullOrWhiteSpace(GetFirstEntityId(sourceEntity, "P156"));
+        var isImmediateSeries = WikidataContainerClassifier.IsImmediateSeriesKind(kind)
+            || (sourcePropertyId == "P179"
+                && kind == WikidataContainerKind.Unknown
+                && hasOrderingEvidence);
 
         return new BridgeSeriesInfo
         {

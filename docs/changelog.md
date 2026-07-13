@@ -1,5 +1,14 @@
 # Changelog
 
+## v3.6.0
+
+Backward-compatible series-manifest classification release.
+
+- Added `SeriesManifestMediaKind`, `SeriesManifestItem.MediaKind`, and `SeriesManifestItem.InstanceOfQids` so every manifest member carries its own auditable media classification.
+- Refined duplicate-path scope resolution: expanded collection children without an ordinal scoped to the requested series remain `CollectedContent`.
+- Root-scoped ordinals now win when Wikidata supplies conflicting ordinals for a direct member and a nested collection path.
+- Unknown P179 containers require ordering evidence before bridge resolution promotes them as immediate series.
+
 ## v3.5.0
 
 Backward-compatible series-manifest scope release.

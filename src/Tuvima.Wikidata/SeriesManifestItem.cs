@@ -24,6 +24,16 @@ public sealed class SeriesManifestItem
     public bool IsCollection { get; init; }
     public bool IsExpandedFromCollection { get; init; }
     /// <summary>
+    /// Direct, non-deprecated P31 values from this manifest member. Consumers
+    /// can use these as auditable evidence for media-specific filtering.
+    /// </summary>
+    public IReadOnlyList<string> InstanceOfQids { get; init; } = [];
+    /// <summary>
+    /// Broad media classification derived from this member's own P31 and
+    /// description evidence.
+    /// </summary>
+    public SeriesManifestMediaKind MediaKind { get; init; } = SeriesManifestMediaKind.Unknown;
+    /// <summary>
     /// Structural membership scope derived from the Wikidata relationship path.
     /// P179 and direct P527 members are the main sequence; direct P361 members
     /// are supplementary; expanded P527 children are collected content.

@@ -17,6 +17,7 @@ public sealed class SeriesManifestService
     private const string Follows = "P155";
     private const string FollowedBy = "P156";
     private const string PublicationDate = "P577";
+    private const string InstanceOf = "P31";
 
     private static readonly string[] RelationshipProperties = [PartOfSeries, PartOf, Franchise, Follows, FollowedBy, HasPart];
 
@@ -350,6 +351,8 @@ public sealed class SeriesManifestService
 
             item.Label = entity.Label;
             item.Description = entity.Description;
+            item.InstanceOfQids = GetEntityIds(entity, InstanceOf);
+            item.MediaKind = SeriesManifestMediaClassifier.Classify(item.InstanceOfQids, item.Description);
             item.IsCollection = IsCollection(item, entities);
             item.PublicationDate = includePublicationDate ? ExtractDateOnly(entity, PublicationDate) : null;
             item.PreviousQid = GetFirstEntityId(entity, Follows);
@@ -400,7 +403,10 @@ public sealed class SeriesManifestService
                 .Where(o => !string.IsNullOrWhiteSpace(o))
                 .Distinct(StringComparer.OrdinalIgnoreCase)
                 .ToList();
-            item.RawSeriesOrdinal = distinctOrdinals.FirstOrDefault();
+            var requestedSeriesOrdinal = distinctOrdinals.FirstOrDefault(ordinal =>
+                item.OrdinalScopes.TryGetValue(ordinal, out var scopeQid)
+                && string.Equals(scopeQid, seriesQid, StringComparison.OrdinalIgnoreCase));
+            item.RawSeriesOrdinal = requestedSeriesOrdinal ?? distinctOrdinals.FirstOrDefault();
             item.OrdinalScopeQid = item.RawSeriesOrdinal is not null
                 && item.OrdinalScopes.TryGetValue(item.RawSeriesOrdinal, out var ordinalScopeQid)
                     ? ordinalScopeQid
@@ -606,7 +612,9 @@ public sealed class SeriesManifestService
             ParentCollectionLabel = item.ParentCollectionLabel ?? (item.ParentCollectionQid is null ? null : LabelFor(item.ParentCollectionQid)),
             IsCollection = item.IsCollection,
             IsExpandedFromCollection = item.IsExpandedFromCollection,
-            MembershipScope = ResolveMembershipScope(item.MembershipScopes),
+            InstanceOfQids = item.InstanceOfQids,
+            MediaKind = item.MediaKind,
+            MembershipScope = ResolveMembershipScope(item),
             SourceProperties = item.SourceProperties.OrderBy(p => p, StringComparer.OrdinalIgnoreCase).ToList(),
             OrderSource = item.OrderSource,
             Relationships = item.Relationships
@@ -659,9 +667,16 @@ public sealed class SeriesManifestService
             _ => "manifest_items"
         };
 
-    private static SeriesManifestItemScope ResolveMembershipScope(
-        IReadOnlySet<SeriesManifestItemScope> scopes)
+    private static SeriesManifestItemScope ResolveMembershipScope(DiscoveredItem item)
     {
+        var scopes = item.MembershipScopes;
+        if (item.IsExpandedFromCollection
+            && item.MainSequenceOrdinalCandidates.Count == 0
+            && scopes.Contains(SeriesManifestItemScope.CollectedContent))
+        {
+            return SeriesManifestItemScope.CollectedContent;
+        }
+
         if (scopes.Contains(SeriesManifestItemScope.MainSequence))
             return SeriesManifestItemScope.MainSequence;
         if (scopes.Contains(SeriesManifestItemScope.Supplementary))
@@ -767,6 +782,8 @@ public sealed class SeriesManifestService
         public string? ParentCollectionLabel { get; set; }
         public bool IsCollection { get; set; }
         public bool IsExpandedFromCollection { get; set; }
+        public IReadOnlyList<string> InstanceOfQids { get; set; } = [];
+        public SeriesManifestMediaKind MediaKind { get; set; } = SeriesManifestMediaKind.Unknown;
         public bool HasConflictingOrdinals { get; set; }
         public bool HasBrokenPreviousNext { get; set; }
         public SeriesManifestOrderSource OrderSource { get; set; } = SeriesManifestOrderSource.Unknown;

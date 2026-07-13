@@ -40,7 +40,7 @@ This is the first .NET Wikidata reconciliation library, filling a gap in the eco
 | [`Tuvima.Wikidata`](https://www.nuget.org/packages/Tuvima.Wikidata) | Core library — reconciliation, entity data, Wikipedia content, graph traversal |
 | [`Tuvima.Wikidata.AspNetCore`](https://www.nuget.org/packages/Tuvima.Wikidata.AspNetCore) | ASP.NET Core middleware for hosting a W3C Reconciliation Service API |
 
-Current release: `3.5.0`
+Current release: `3.6.0`
 
 Current validation: 121 offline unit tests plus 77 live integration tests.
 
@@ -48,6 +48,7 @@ Current validation: 121 offline unit tests plus 77 live integration tests.
 
 | Version | Type | Notes |
 |---|---|---|
+| `3.6.0` | Minor | Adds per-member media classification and scope resolution based on ordinal/traversal evidence. |
 | `3.5.0` | Minor | Adds structural series membership scopes so main sequences, supplemental works, collected content, and broader context can be counted and displayed independently. |
 | `3.2.0` | Minor | Adds ordinal-aware bridge scoring for TV/comic ingestion and `PersonsService.SearchBatchAsync(...)`. |
 | `3.0.3` | Patch | Exact QID reconciliation now uses direct `wbgetentities` lookup while still honoring type and exclusion constraints. |
@@ -137,6 +138,12 @@ Tune scoring, language, type hierarchy, provider-safe host limits, response cach
 The reconciliation pipeline has four stages: dual search, entity fetching, weighted scoring, and type filtering.
 
 [Architecture overview](docs/architecture.md) — pipeline stages, internal components, design decisions
+
+## What's New in v3.6.0
+
+- **Member-owned classification.** Every manifest row exposes `MediaKind` and the P31 QIDs that support it; consumers no longer need to inherit the parent container's media type.
+- **Path-aware scopes.** Expanded children remain Collected Content unless they have ordering evidence scoped directly to the requested series.
+- **Safer immediate-series promotion.** Unknown P179 targets require ordinal or previous/next evidence before becoming immediate series.
 
 ## What's New in v3.5.0
 
