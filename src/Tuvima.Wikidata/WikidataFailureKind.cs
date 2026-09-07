@@ -10,5 +10,7 @@ public enum WikidataFailureKind
     RateLimited,
     TransientNetworkFailure,
     MalformedResponse,
-    Cancelled
+    Cancelled,
+    /// <summary>The provider rejected a request with a non-retryable API error.</summary>
+    ProviderRejected
 }

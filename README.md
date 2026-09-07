@@ -40,14 +40,18 @@ This is the first .NET Wikidata reconciliation library, filling a gap in the eco
 | [`Tuvima.Wikidata`](https://www.nuget.org/packages/Tuvima.Wikidata) | Core library — reconciliation, entity data, Wikipedia content, graph traversal |
 | [`Tuvima.Wikidata.AspNetCore`](https://www.nuget.org/packages/Tuvima.Wikidata.AspNetCore) | ASP.NET Core middleware for hosting a W3C Reconciliation Service API |
 
-Current release: `3.6.0`
+Current release: `3.9.1`
 
-Current validation: 121 offline unit tests plus 77 live integration tests.
+Current offline validation: 232 passing tests on each of .NET 8 and .NET 10 (464 executions). Live integration tests run separately against Wikimedia services.
 
 ## Version Details
 
 | Version | Type | Notes |
 |---|---|---|
+| `3.9.1` | Patch | Extracts bridge scoring, canonical rollups, and relationships into focused internals; adds offline comparison benchmarks. |
+| `3.9.0` | Minor | Validated ASP.NET requests, configurable request limits, and explicit .NET 8/.NET 10 test coverage. |
+| `3.8.0` | Minor | Bounded response cache, admission-based request pacing, and bounded batch execution. |
+| `3.7.0` | Minor | Provider-error validation, independent shared-request cancellation, full-body timeouts, and consistent subclass traversal. |
 | `3.6.0` | Minor | Adds per-member media classification and scope resolution based on ordinal/traversal evidence. |
 | `3.5.0` | Minor | Adds structural series membership scopes so main sequences, supplemental works, collected content, and broader context can be counted and displayed independently. |
 | `3.2.0` | Minor | Adds ordinal-aware bridge scoring for TV/comic ingestion and `PersonsService.SearchBatchAsync(...)`. |
@@ -138,6 +142,38 @@ Tune scoring, language, type hierarchy, provider-safe host limits, response cach
 The reconciliation pipeline has four stages: dual search, entity fetching, weighted scoring, and type filtering.
 
 [Architecture overview](docs/architecture.md) — pipeline stages, internal components, design decisions
+
+## What's New in v3.9.1
+
+- Bridge resolution delegates scoring, canonical-work selection, and relationship extraction to focused internal components. Public APIs and selection rules are unchanged.
+- Seven additional contract tests cover rollup targets, edition selection, ranking ties, ambiguity warnings, and relationship provenance.
+- An offline benchmark harness measures reconciliation, batches, bridge resolution, and graph workloads, and compares representative bridge results and public API signatures. See [performance measurements](docs/performance.md).
+
+## What's New in v3.9.0
+
+- ASP.NET reconciliation validates the complete request before contacting Wikidata. Malformed JSON, blank queries, null entries, and invalid properties return HTTP 400 problem details.
+- Configure batch size, query length, candidate count, property count, and body-size limits through `MapReconciliation`. Oversized bodies return HTTP 413, including bodies without `Content-Length`; unsupported content types return HTTP 415.
+- Valid endpoint batches use bounded reconciliation and preserve correlation keys. Request cancellation reaches provider work.
+- Offline tests, including 36 endpoint cases, now run on both .NET 8 and .NET 10 in CI. Live tests run once in a separate nonblocking job.
+
+See the [ASP.NET Core guide](docs/aspnetcore.md) for defaults and request examples. Existing clients exceeding the new limits can raise them explicitly.
+
+## What's New in v3.8.0
+
+- The default response cache uses LRU eviction with limits of 1,024 entries and 64 MiB of string payloads. Use `new InMemoryWikidataResponseCache(maxEntries, maxSizeBytes)` to customize capacity.
+- Host requests are spaced after a concurrency slot becomes available, so queued work cannot burst through previously reserved start times.
+- Batches and variable-size fan-out use bounded execution windows controlled by `MaxConcurrency`. Ordered results and indexed streaming results are preserved; early stream disposal cancels pending work.
+
+See [configuration](docs/configuration.md) for capacity limits, batch cancellation, and request pacing.
+
+## What's New in v3.7.0
+
+- Temporary provider errors are retried even when returned with HTTP 200; permanent errors have a distinct `ProviderRejected` failure kind.
+- Invalid responses cannot poison the response cache, and old invalid entries are bypassed.
+- Callers sharing a request can cancel independently, and timeouts cover response-body reads.
+- Subclass matching is independent of lookup order and respects each request's depth override, including zero.
+
+See [configuration](docs/configuration.md) for timeout, cancellation, retry, and cache behavior.
 
 ## What's New in v3.6.0
 

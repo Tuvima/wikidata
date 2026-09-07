@@ -11,11 +11,7 @@ dotnet add package Tuvima.Wikidata.AspNetCore
 ## DI Registration
 
 ```csharp
-services.AddWikidataReconciliation(options =>
-{
-    options.Language = "en";
-    options.UserAgent = "MyApp/1.0 (contact@example.com)";
-});
+services.AddWikidataReconciliation();
 ```
 
 As of v2.0, `AddWikidataReconciliation` also registers each **sub-service** as a singleton, so consumers can inject a narrow slice of the API instead of depending on the whole facade:
@@ -72,7 +68,50 @@ app.MapReconciliation("/api/reconcile", options =>
 
 All endpoints respect the `Accept-Language` header — a French browser automatically gets French labels without extra configuration.
 
-As of v2.6.0, POST batch reconciliation fans out independent queries in parallel, while the shared reconciler request sender still enforces provider-safe per-host limits. The root `WikidataReconciler.Diagnostics` object can be injected to include request counts, cache hits/misses, retries, 429s, throttled waits, and typed provider failures in integration reports.
+POST batches use `Reconcile.ReconcileBatchAsync` to bound active queries by `MaxConcurrency`, while shared host policies independently limit HTTP requests. Every entry is validated before any provider work starts. Batch correlation keys and the existing response shapes are preserved, and client cancellation propagates to provider work. Access diagnostics through the injected reconciler's `Diagnostics` property.
+
+## Request Validation and Limits (v3.9.0)
+
+POST accepts `application/x-www-form-urlencoded` or `multipart/form-data` with exactly one `query` or `queries` field containing a JSON object. Raw `application/json` requests are unsupported. Files, repeated query fields, and simultaneous `query` and `queries` values are rejected.
+
+Single-query form value:
+
+```json
+{"query":"Douglas Adams","type":"Q5","limit":5}
+```
+
+Batch form value:
+
+```json
+{"row1":{"query":"Q42"},"row2":{"query":"Q30"}}
+```
+
+Set limits independently for each mapped endpoint:
+
+```csharp
+app.MapReconciliation("/api/reconcile", options =>
+{
+    options.MaxBatchSize = 100;
+    options.MaxQueryLength = 500;
+    options.MaxResultLimit = 50;
+    options.MaxPropertiesPerQuery = 25;
+    options.MaxRequestBodyBytes = 1024 * 1024;
+});
+```
+
+| Option | Default | Meaning |
+|---|---|---|
+| `MaxBatchSize` | 100 | Maximum queries in a batch; empty batches are invalid |
+| `MaxQueryLength` | 500 | Maximum UTF-16 characters in query/type/property ID/property value or a nonblank suggest prefix |
+| `MaxResultLimit` | 50 | Maximum requested candidates per query; omitted/zero uses the smaller of 5 and this setting |
+| `MaxPropertiesPerQuery` | 25 | Maximum property constraints on one query |
+| `MaxRequestBodyBytes` | 1,048,576 | Maximum POST body bytes, including form encoding and multipart boundaries |
+
+All limits must be positive; invalid configuration throws during `MapReconciliation`. Clients that previously sent larger requests must split them or raise the appropriate limits. Server/proxy body limits can still reject requests earlier. Bodies without `Content-Length` are read within the same byte limit before form parsing.
+
+Malformed JSON, wrong field types, blank queries, null batch/property entries, blank batch keys, negative/excessive candidate limits, and excessive batch/text/property counts return **400**. Properties require nonblank string `pid` and `v` fields. Oversized bodies return **413**; unsupported content types return **415**. Validation responses use `application/problem+json` with `status`, `title`, and `detail`. Provider failures and cancellation remain distinct from client validation errors. Empty suggest prefixes still return an empty result list.
+
+The endpoint test suite runs in-memory on both supported ASP.NET runtimes and never calls Wikimedia. It checks validation, limits, successful response shapes, localization, multipart forms, and cancellation.
 
 ## Manual Registration (No Companion Package)
 

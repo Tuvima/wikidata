@@ -1,10 +1,25 @@
 namespace Tuvima.Wikidata.AspNetCore;
 
 /// <summary>
-/// Configuration for the W3C Reconciliation Service API manifest.
+/// Configuration for the W3C Reconciliation Service API manifest and request limits.
 /// </summary>
 public sealed class ReconciliationServiceOptions
 {
+    /// <summary>Maximum queries in one POST batch. Default is 100; must be positive.</summary>
+    public int MaxBatchSize { get; set; } = 100;
+
+    /// <summary>Maximum characters in a query, type, property ID/value, or suggest prefix. Default is 500.</summary>
+    public int MaxQueryLength { get; set; } = 500;
+
+    /// <summary>Maximum requested candidates per query. Default is 50; must be positive.</summary>
+    public int MaxResultLimit { get; set; } = 50;
+
+    /// <summary>Maximum property constraints per query. Default is 25; must be positive.</summary>
+    public int MaxPropertiesPerQuery { get; set; } = 25;
+
+    /// <summary>Maximum POST body size in bytes, including form encoding. Default is 1 MiB.</summary>
+    public int MaxRequestBodyBytes { get; set; } = 1024 * 1024;
+
     /// <summary>
     /// The display name of the reconciliation service.
     /// </summary>

@@ -23,7 +23,9 @@ public sealed class WikidataReconcilerOptions
     public string UserAgent { get; init; } = "Tuvima.Wikidata/1.0 (https://github.com/Tuvima/wikidata)";
 
     /// <summary>
-    /// HTTP request timeout. Default is 30 seconds.
+    /// Per-attempt timeout covering HTTP headers and response body. Default is 30 seconds.
+    /// Starts after host admission; queue time and retry delays are separate.
+    /// A supplied HttpClient's shorter timeout wins. InfiniteTimeSpan disables this option's limit.
     /// </summary>
     public TimeSpan Timeout { get; init; } = TimeSpan.FromSeconds(30);
 
@@ -52,8 +54,9 @@ public sealed class WikidataReconcilerOptions
     public double AutoMatchScoreGap { get; init; } = 10;
 
     /// <summary>
-    /// Legacy top-level batch concurrency setting retained for compatibility.
-    /// Provider HTTP concurrency is controlled by the per-host rate-limit options.
+    /// Maximum active work items per batch or variable-size fan-out. Default is 5.
+    /// Internally clamped to 1..1024. Nested operations have independent windows;
+    /// provider HTTP concurrency is separately controlled by per-host rate-limit options.
     /// </summary>
     public int MaxConcurrency { get; init; } = 5;
 
@@ -85,8 +88,8 @@ public sealed class WikidataReconcilerOptions
 
     /// <summary>
     /// The maxlag parameter sent with every API request (Wikimedia bot etiquette).
-    /// If the server is lagging more than this many seconds, it returns a 429 response
-    /// instead of processing the request. Default is 5 seconds.
+    /// If the server is lagging more than this many seconds, it can return an HTTP 200
+    /// maxlag error, which is retried and never cached. Default is 5 seconds.
     /// Set to 0 to disable. See https://www.mediawiki.org/wiki/Manual:Maxlag_parameter
     /// </summary>
     public int MaxLag { get; init; } = 5;
@@ -134,6 +137,8 @@ public sealed class WikidataReconcilerOptions
 
     /// <summary>
     /// Enables coalescing of identical in-flight GET requests. Default is true.
+    /// Each caller can cancel its own wait independently. Shared work is cancelled when
+    /// the last waiter leaves or the reconciler is disposed.
     /// </summary>
     public bool EnableRequestCoalescing { get; init; } = true;
 
@@ -144,7 +149,8 @@ public sealed class WikidataReconcilerOptions
     public bool EnableResponseCaching { get; init; } = true;
 
     /// <summary>
-    /// Cache used by the shared HTTP pipeline. Defaults to a process-local in-memory cache.
+    /// Cache used by the shared HTTP pipeline. Defaults to a process-local LRU cache
+    /// limited to 1,024 entries and 64 MiB of UTF-16 key and response payloads.
     /// Applications can replace this with a durable provider cache.
     /// </summary>
     public IWikidataResponseCache? ResponseCache { get; init; } = new InMemoryWikidataResponseCache();

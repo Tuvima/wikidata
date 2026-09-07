@@ -26,6 +26,8 @@ public sealed class ReconciliationRequest
     /// <summary>
     /// Per-request override for P279 subclass hierarchy walk depth.
     /// If null, uses the global <see cref="WikidataReconcilerOptions.TypeHierarchyDepth"/>.
+    /// Zero disables hierarchy walking even when the global depth is positive.
+    /// Applies to both required and excluded types, including exact-QID lookups.
     /// </summary>
     public int? TypeHierarchyDepth { get; init; }
 

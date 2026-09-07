@@ -24,10 +24,11 @@ internal sealed class TypeChecker
         IReadOnlyList<string>? excludeTypes,
         SubclassResolver? subclassResolver,
         string language,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        int? hierarchyDepth = null)
     {
         var requiredTypes = string.IsNullOrEmpty(requiredType) ? null : new[] { requiredType };
-        return CheckAsync(entity, requiredTypes, excludeTypes, subclassResolver, language, cancellationToken);
+        return CheckAsync(entity, requiredTypes, excludeTypes, subclassResolver, language, cancellationToken, hierarchyDepth);
     }
 
     /// <summary>
@@ -40,7 +41,8 @@ internal sealed class TypeChecker
         IReadOnlyList<string>? excludeTypes,
         SubclassResolver? subclassResolver,
         string language,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        int? hierarchyDepth = null)
     {
         var entityTypes = WikidataEntityFetcher.GetTypeIds(entity, _typePropertyId);
 
@@ -57,7 +59,7 @@ internal sealed class TypeChecker
             {
                 foreach (var excludeType in excludeTypes)
                 {
-                    if (await subclassResolver.IsSubclassOfAsync(entityTypes, excludeType, language, cancellationToken)
+                    if (await subclassResolver.IsSubclassOfAsync(entityTypes, excludeType, language, cancellationToken, hierarchyDepth)
                             .ConfigureAwait(false))
                         return TypeMatchResult.Excluded;
                 }
@@ -84,7 +86,7 @@ internal sealed class TypeChecker
         {
             foreach (var requiredType in requiredTypes)
             {
-                if (await subclassResolver.IsSubclassOfAsync(entityTypes, requiredType, language, cancellationToken)
+                if (await subclassResolver.IsSubclassOfAsync(entityTypes, requiredType, language, cancellationToken, hierarchyDepth)
                         .ConfigureAwait(false))
                     return TypeMatchResult.Matched;
             }

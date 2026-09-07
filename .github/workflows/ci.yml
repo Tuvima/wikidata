@@ -10,29 +10,51 @@ jobs:
   build-and-test:
     runs-on: ubuntu-latest
     strategy:
+      fail-fast: false
       matrix:
-        dotnet-version: ['8.0.x', '10.0.x']
+        framework: [net8.0, net10.0]
 
     steps:
       - uses: actions/checkout@v6
 
-      - name: Setup .NET ${{ matrix.dotnet-version }}
+      # The .NET 10 SDK builds both targets and supports the .slnx solution.
+      # Install both runtimes so tests execute on the requested target.
+      - name: Setup .NET SDK and runtimes
         uses: actions/setup-dotnet@v5
         with:
-          dotnet-version: ${{ matrix.dotnet-version }}
+          dotnet-version: |
+            8.0.x
+            10.0.x
 
       - name: Restore dependencies
         run: dotnet restore
 
       - name: Build
-        run: dotnet build --no-restore --configuration Release
+        run: dotnet build --no-restore --configuration Release --warnaserror
 
       - name: Run unit tests
-        run: dotnet test --no-build --configuration Release --filter "Category!=Integration" --verbosity normal
+        run: dotnet test --no-build --configuration Release --framework ${{ matrix.framework }} --filter "Category!=Integration" --verbosity normal --logger trx --results-directory ./TestResults/${{ matrix.framework }}
 
-      - name: Run integration tests
-        run: dotnet test --no-build --configuration Release --filter "Category=Integration" --verbosity normal
-        continue-on-error: true  # Integration tests depend on Wikidata API availability
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results-${{ matrix.framework }}
+          path: ./TestResults/${{ matrix.framework }}/*.trx
+
+  # Run live-provider tests once, separately from deterministic release gates.
+  integration:
+    runs-on: ubuntu-latest
+    needs: build-and-test
+    continue-on-error: true
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: '10.0.x'
+      - name: Run integration tests on .NET 10
+        run: dotnet test --configuration Release --framework net10.0 --filter "Category=Integration" --verbosity normal
 
   pack:
     runs-on: ubuntu-latest

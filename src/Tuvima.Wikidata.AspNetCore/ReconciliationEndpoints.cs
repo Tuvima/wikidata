@@ -19,7 +19,7 @@ public static class ReconciliationEndpoints
     /// </summary>
     /// <param name="endpoints">The endpoint route builder.</param>
     /// <param name="pathPrefix">The URL prefix (e.g., "/api/reconcile"). Default is "/reconcile".</param>
-    /// <param name="configure">Optional configuration for the service manifest.</param>
+    /// <param name="configure">Optional configuration for the service manifest and request limits.</param>
     public static IEndpointRouteBuilder MapReconciliation(
         this IEndpointRouteBuilder endpoints,
         string pathPrefix = "/reconcile",
@@ -27,6 +27,11 @@ public static class ReconciliationEndpoints
     {
         var serviceOptions = new ReconciliationServiceOptions();
         configure?.Invoke(serviceOptions);
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(serviceOptions.MaxBatchSize);
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(serviceOptions.MaxQueryLength);
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(serviceOptions.MaxResultLimit);
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(serviceOptions.MaxPropertiesPerQuery);
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(serviceOptions.MaxRequestBodyBytes);
 
         var prefix = pathPrefix.TrimEnd('/');
 
@@ -41,41 +46,20 @@ public static class ReconciliationEndpoints
         endpoints.MapPost(prefix, async (HttpContext ctx, WikidataReconciler reconciler) =>
         {
             var acceptLanguage = GetAcceptLanguage(ctx);
-            var form = await ctx.Request.ReadFormAsync(ctx.RequestAborted);
+            var (payload, error) = await ReconciliationRequestReader.ReadAsync(ctx.Request, serviceOptions, ctx.RequestAborted);
+            if (error is not null) return error;
+            var entries = payload!.Queries.ToArray();
+            var requests = entries.Select(entry => MapToRequest(entry.Value, acceptLanguage,
+                Math.Min(5, serviceOptions.MaxResultLimit))).ToArray();
+            var reconciled = await reconciler.Reconcile.ReconcileBatchAsync(requests, ctx.RequestAborted);
+            if (!payload.IsBatch)
+                return Results.Json(new W3cQueryResponse { Result = reconciled[0].Select(MapToCandidate).ToList() },
+                    W3cJsonContext.Default.W3cQueryResponse);
 
-            // Check for batch queries (W3C spec: queries parameter as JSON)
-            if (form.TryGetValue("queries", out var queriesJson) && !string.IsNullOrEmpty(queriesJson))
-            {
-                var queries = JsonSerializer.Deserialize(queriesJson!, W3cJsonContext.Default.DictionaryStringW3cQuery);
-                if (queries is null)
-                    return Results.BadRequest("Invalid queries parameter");
-
-                var batched = await Task.WhenAll(queries.Select(async kvp =>
-                {
-                    var request = MapToRequest(kvp.Value, acceptLanguage);
-                    var reconciled = await reconciler.ReconcileAsync(request, ctx.RequestAborted);
-                    return (kvp.Key, Candidates: reconciled.Select(MapToCandidate).ToList());
-                }));
-
-                var results = batched.ToDictionary(item => item.Key, item => item.Candidates);
-
-                return Results.Json(results, W3cJsonContext.Default.DictionaryStringListW3cCandidate);
-            }
-
-            // Single query via "query" parameter
-            if (form.TryGetValue("query", out var queryParam) && !string.IsNullOrEmpty(queryParam))
-            {
-                var query = JsonSerializer.Deserialize(queryParam!, W3cJsonContext.Default.W3cQuery);
-                if (query is null)
-                    return Results.BadRequest("Invalid query parameter");
-
-                var request = MapToRequest(query, acceptLanguage);
-                var reconciled = await reconciler.ReconcileAsync(request, ctx.RequestAborted);
-                var response = new W3cQueryResponse { Result = reconciled.Select(MapToCandidate).ToList() };
-                return Results.Json(response, W3cJsonContext.Default.W3cQueryResponse);
-            }
-
-            return Results.BadRequest("Missing 'queries' or 'query' parameter");
+            var results = new Dictionary<string, List<W3cCandidate>>(StringComparer.Ordinal);
+            for (var i = 0; i < entries.Length; i++)
+                results.Add(entries[i].Key, reconciled[i].Select(MapToCandidate).ToList());
+            return Results.Json(results, W3cJsonContext.Default.DictionaryStringListW3cCandidate);
         });
 
         // ─── Suggest Endpoints ────────────────────────────────────────
@@ -88,6 +72,8 @@ public static class ReconciliationEndpoints
                 return Results.Json(new W3cSuggestResponse(), W3cJsonContext.Default.W3cSuggestResponse);
 
             var language = GetAcceptLanguage(ctx);
+            if (prefixParam.Length > serviceOptions.MaxQueryLength)
+                return Results.Problem(statusCode: 400, detail: "The prefix exceeds MaxQueryLength.");
             var results = await reconciler.SuggestAsync(prefixParam, 7, language, ctx.RequestAborted);
 
             var response = new W3cSuggestResponse
@@ -111,6 +97,8 @@ public static class ReconciliationEndpoints
                 return Results.Json(new W3cSuggestResponse(), W3cJsonContext.Default.W3cSuggestResponse);
 
             var language = GetAcceptLanguage(ctx);
+            if (prefixParam.Length > serviceOptions.MaxQueryLength)
+                return Results.Problem(statusCode: 400, detail: "The prefix exceeds MaxQueryLength.");
             var results = await reconciler.SuggestPropertiesAsync(prefixParam, 7, language, ctx.RequestAborted);
 
             var response = new W3cSuggestResponse
@@ -134,6 +122,8 @@ public static class ReconciliationEndpoints
                 return Results.Json(new W3cSuggestResponse(), W3cJsonContext.Default.W3cSuggestResponse);
 
             var language = GetAcceptLanguage(ctx);
+            if (prefixParam.Length > serviceOptions.MaxQueryLength)
+                return Results.Problem(statusCode: 400, detail: "The prefix exceeds MaxQueryLength.");
             var results = await reconciler.SuggestTypesAsync(prefixParam, 7, language, ctx.RequestAborted);
 
             var response = new W3cSuggestResponse
@@ -235,7 +225,7 @@ public static class ReconciliationEndpoints
         };
     }
 
-    private static ReconciliationRequest MapToRequest(W3cQuery query, string? acceptLanguage = null)
+    private static ReconciliationRequest MapToRequest(W3cQuery query, string? acceptLanguage = null, int defaultLimit = 5)
     {
         var types = !string.IsNullOrEmpty(query.Type) ? new[] { query.Type } : null;
 
@@ -243,7 +233,7 @@ public static class ReconciliationEndpoints
         {
             Query = query.Query ?? "",
             Types = types,
-            Limit = query.Limit > 0 ? query.Limit : 5,
+            Limit = query.Limit > 0 ? query.Limit : defaultLimit,
             Language = acceptLanguage
         };
 

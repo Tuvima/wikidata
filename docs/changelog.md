@@ -1,5 +1,48 @@
 # Changelog
 
+## v3.9.1
+
+Phase 4 structural cleanup and performance baseline.
+
+- Reduce `BridgeResolutionService` from 1,467 to 668 lines by extracting internal `BridgeCandidateScorer`, `BridgeCanonicalRollup`, `BridgeRelationshipExtractor`, `BridgeEntityFacts`, and `BridgeDiagnosticsBuilder` components. HTTP access, batch coordination, progress, cancellation, and failure orchestration remain in the service.
+- Preserve public API shape, candidate formulas/order, reason codes, warning behavior, canonical paths, and relationship provenance. No scoring or graph algorithm optimizations are introduced.
+- Add seven public contract tests that pass before and after extraction, bringing offline coverage to 232 tests on each supported runtime.
+- Add a dependency-free offline benchmark project for reconciliation, batches, bridge resolution, graph traversal, and graph construction, with result/API comparison fingerprints. See `docs/performance.md` for methodology and measured limits.
+
+## v3.9.0
+
+Phase 3 consumer and release confidence.
+
+- Add positive configurable `ReconciliationServiceOptions` limits: `MaxBatchSize` (100), `MaxQueryLength` (500), `MaxResultLimit` (50), `MaxPropertiesPerQuery` (25), and `MaxRequestBodyBytes` (1 MiB). Invalid settings fail at endpoint mapping.
+- Validate form encoding, JSON shapes, all batch entries, query text, candidate limits, and properties before provider work. Return HTTP 400 problem details for invalid requests, 413 for oversized bodies, and 415 for unsupported content types. Body limits apply without Content-Length too.
+- Preserve single-query response shape and batch correlation keys; use the bounded reconciliation service for endpoint batches and propagate request cancellation.
+- Apply query-length limits to nonblank suggest prefixes while preserving empty suggestion responses.
+- Add 36 offline endpoint cases using framework-matched ASP.NET TestHost packages. Tests now target net8.0 and net10.0, with 225 offline tests per target.
+- CI installs the .NET 10 build SDK and both runtimes, tests each target explicitly, treats build warnings as errors, and retains per-target TRX results. Live tests run once in a separate nonblocking job.
+
+## v3.8.0
+
+Phase 2 performance release.
+
+- Bound the default response cache to 1,024 entries and 64 MiB of UTF-16 key/response payloads; add a configurable constructor while retaining the parameterless constructor.
+- Evict least-recently-used responses when full, prune expired entries on cache activity, and skip oversized responses. Replacement and eviction update entry, expiry, recency, and byte accounting atomically.
+- Pace host admissions after acquiring concurrency capacity using monotonic time, preventing bursts after a backlog and avoiding reservations for cancelled waits.
+- Use bounded execution windows for reconciliation batches/streams, author resolution, person batches, Wikipedia fan-out, and multilingual search. Preserve ordered batch results and indexed streaming results; cancel outstanding work after failure, cancellation, or early stream disposal.
+- Keep provider host limits independent from per-batch `MaxConcurrency`; person batches retain their stricter existing cap.
+- Add 13 offline regression cases, including a 10,000-item early-exit stream and 5,000 concurrent cache operations.
+
+## v3.7.0
+
+Phase 1 reliability release.
+
+- Added `WikidataFailureKind.ProviderRejected` for permanent provider errors, preserving existing enum values.
+- Detect MediaWiki error envelopes even with HTTP 200; retry recognized temporary failures and honor `Retry-After` without caching errors.
+- Reject malformed JSON and invalid response field types before caching, and recover from existing invalid cache entries.
+- Give coalesced callers independent cancellation; cancel abandoned work and clean up on completion or disposal.
+- Apply per-attempt timeouts through response-body reads, respecting a supplied client's shorter timeout and releasing host slots before retrying.
+- Cache direct subclass parents so lookup order cannot affect results; honor request depth overrides, including zero, for required and excluded types.
+- Added 27 offline regression cases covering provider failures, cache recovery, shared cancellation, disposal, body timeouts, and subclass traversal.
+
 ## v3.6.0
 
 Backward-compatible series-manifest classification release.

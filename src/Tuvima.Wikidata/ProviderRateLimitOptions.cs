@@ -12,6 +12,8 @@ public sealed record ProviderRateLimitOptions
 
     /// <summary>
     /// Maximum request start rate for the host. Set to 0 to disable request pacing.
+    /// Admissions are spaced after a concurrency slot is available; cancelled waits
+    /// do not reserve future start times.
     /// </summary>
     public double RequestsPerSecond { get; init; } = 1;
 

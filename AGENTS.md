@@ -8,7 +8,7 @@ Two NuGet packages:
 - `Tuvima.Wikidata` — core library, zero external dependencies
 - `Tuvima.Wikidata.AspNetCore` — W3C Reconciliation API middleware for ASP.NET Core
 
-## Architecture (v3.6.0)
+## Architecture (v3.9.1)
 
 `WikidataReconciler` is a thin **facade** that owns a shared `ReconcilerContext` (HttpClient, options, search/fetcher/scorer/type-checker collaborators, shared provider-safe HTTP pipeline, response cache hook, diagnostics, and per-host limiters) and exposes focused **sub-services** as properties:
 
@@ -327,12 +327,12 @@ Typed provider failures use `WikidataFailureKind` (`NotFound`, `NoSitelink`, `Ra
 | `ApiEndpoint` | Wikidata API | Custom Wikibase endpoint support |
 | `Language` | `"en"` | Default search language (overridable per-request) |
 | `UserAgent` | Library default | Required by Wikimedia policy |
-| `Timeout` | 30s | HTTP request timeout |
+| `Timeout` | 30s | Per-attempt timeout for headers and body; supplied HttpClient's shorter limit wins |
 | `TypePropertyId` | `"P31"` | Instance-of property (custom Wikibase may differ) |
 | `PropertyWeight` | 0.4 | Weight per property match (label = 1.0) |
 | `AutoMatchThreshold` | 95 | Score threshold for auto-match |
 | `AutoMatchScoreGap` | 10 | Min gap over second-best for auto-match |
-| `MaxConcurrency` | 5 | Legacy top-level batch concurrency setting retained for compatibility |
+| `MaxConcurrency` | 5 | Active work items per batch/fan-out, clamped to 1..1024; separate from host HTTP limits |
 | `MaxRetries` | 3 | Retry attempts for transient 408/429/5xx failures |
 | `RetryBaseDelay` | 1s | Base exponential-backoff delay when Retry-After is absent |
 | `MaxRetryDelay` | 30s | Cap for exponential backoff when Retry-After is absent |
@@ -383,7 +383,7 @@ dotnet test
 dotnet pack --configuration Release
 ```
 
-Test counts: 121 offline tests + 77 integration tests = 198 total.
+Offline validation: 232 passing tests per target (.NET 8 and .NET 10), 464 executions. Live integration tests run separately against Wikimedia services.
 
 ## Key Design Decisions
 
@@ -413,12 +413,44 @@ Test counts: 121 offline tests + 77 integration tests = 198 total.
 | `action=query&list=recentchanges` | Entity change monitoring |
 | CirrusSearch `haswbstatement:` | External ID reverse lookup + type-filtered search |
 
+## Phase 1 Reliability (v3.7.0)
+
+- `ProviderJson` checks HTTP 200 MediaWiki `error`/`errors` envelopes and recognized response field types before caching. Temporary maxlag/rate-limit/read-only/database failures retry; malformed responses never cache. Existing invalid cache entries are bypassed and replaced on success.
+- `WikidataFailureKind.ProviderRejected` is appended without renumbering existing values. Permanent provider rejections do not retry; missing entities remain `NotFound`.
+- `ResilientHttpClient` owns shared operations independently of callers. Each waiter cancels independently; the last waiter leaving or disposal cancels shared work. Operation completion removes tracking and releases limiter resources safely.
+- Attempt timeouts cover headers and body after host admission, excluding queue/backoff delays. A supplied client's shorter timeout wins.
+- `SubclassResolver` caches direct P279 parents instead of partial ancestor closures. Request depth overrides, including zero, apply to required and excluded types for both text and exact-QID reconciliation.
+- Regression files: `tests/Tuvima.Wikidata.Tests/Phase1HttpReliabilityTests.cs` and `tests/Tuvima.Wikidata.Tests/SubclassReliabilityTests.cs` cover these contracts with 27 offline cases.
+
+## Phase 2 Performance (v3.8.0)
+
+- `InMemoryWikidataResponseCache()` retains its parameterless API with defaults of 1,024 entries and 64 MiB of UTF-16 key/response payloads. New constructor `(int maxEntries, long maxSizeBytes = 67108864)` allows positive custom limits. Object overhead is additional. LRU eviction, expiry pruning on cache activity, and replacement accounting occur under one lock; oversized/nonpositive-TTL replacements remove the old entry without storing the new one.
+- `Internal/BoundedAsync.cs` provides ordered batch collection and indexed completion streaming with bounded pending tasks. It cancels and observes pending operations on failure, cancellation, and early stream disposal. Applied to reconciliation, author/person batches, Wikipedia fan-out, and multilingual search. `MaxConcurrency` is per operation, with independent nested windows; host limits remain shared and person batches retain their stricter cap.
+- `HostRateLimiter` acquires concurrency before spacing admissions using monotonic timestamps. Cancelled waits release capacity without reserving future slots.
+- `tests/Tuvima.Wikidata.Tests/Phase2PerformanceTests.cs` contains 13 regression cases for capacity/expiry, concurrent cache updates, pacing backlogs/cancellation, ordered bounded batches, and large streams with early disposal.
+
+## Phase 3 Consumer and Release Confidence (v3.9.0)
+
+- `src/Tuvima.Wikidata.AspNetCore/ReconciliationRequestReader.cs` bounds POST bodies and validates complete form/JSON payloads before provider calls. Invalid payloads return 400 problem details, oversized bodies return 413, and unsupported content types return 415. Cancellation/provider failures are not relabeled as client validation errors.
+- `ReconciliationServiceOptions` adds positive `MaxBatchSize` (100), `MaxQueryLength` (500), `MaxResultLimit` (50), `MaxPropertiesPerQuery` (25), and `MaxRequestBodyBytes` (1 MiB). Configure them through `MapReconciliation`; mapping rejects nonpositive settings. Query/type/property strings and nonblank suggest prefixes honor the character limit. Omitted/zero result limit uses min(5, MaxResultLimit).
+- Endpoint batches validate every entry before execution, then delegate to bounded reconciliation, preserving correlation keys and cancellation. Single and batch response shapes remain unchanged.
+- `tests/Tuvima.Wikidata.Tests/ReconciliationEndpointTests.cs` adds 36 offline HTTP endpoint cases using framework-matched ASP.NET TestHost packages. The test project now targets both net8.0 and net10.0; production packages retain their dependency policies.
+
+## Phase 4 Bridge Structure (v3.9.1)
+
+- `BridgeResolutionService` retains HTTP access, batch orchestration, fallback searches, progress, cancellation, and failure handling. Its implementation is reduced from 1,467 to 668 lines with no public API changes.
+- `src/Tuvima.Wikidata/Internal/BridgeCandidateScorer.cs` owns bridge-claim verification, bridge/text candidate scoring, media hints, ordinal normalization, known-ID collection, and deterministic ranking. It receives the configured type-property ID and fetched data, with no HTTP dependency.
+- `Internal/BridgeCanonicalRollup.cs` owns P629/P747 work/edition selection and evidence paths. `Internal/BridgeRelationshipExtractor.cs` owns related-QID discovery, series classification, and relationship-edge extraction. Both operate on fetched entity data.
+- `Internal/BridgeEntityFacts.cs` contains shared claim readers/property sets; `Internal/BridgeDiagnosticsBuilder.cs` accumulates request diagnostics across phases.
+- `tests/Tuvima.Wikidata.Tests/BridgeContractTests.cs` adds seven public behavior checks, verified before and after extraction.
+- `benchmarks/Tuvima.Wikidata.Benchmarks/` is a standalone non-packable net8.0/net10.0 console project, outside the solution and CI test gates. It uses local provider fixtures, measures timing/allocations, and emits representative result/public API fingerprints. Commands and baseline evidence are in `docs/performance.md`; benchmark output defaults to stdout or an explicitly supplied file.
+
 ## CI/CD
 
 GitHub Actions workflow (`.github/workflows/ci.yml`):
-- Build matrix: .NET 8.0 and 10.0
-- Unit tests run on every push/PR
-- Integration tests run with `continue-on-error` (depend on Wikidata availability)
+- Build SDK: .NET 10, with .NET 8 and .NET 10 runtimes installed
+- Explicit test-target matrix: net8.0 and net10.0; offline core/endpoint tests gate every push/PR, with build warnings treated as errors and per-target TRX artifacts
+- Integration tests run once on .NET 10 in a separate `continue-on-error` job (depend on Wikidata availability)
 - NuGet pack as build artifact
 - Auto-publish to NuGet on every push to main (requires `NUGET_API_KEY` secret)
 

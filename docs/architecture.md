@@ -84,6 +84,22 @@ Candidates are checked against the requested type (P31 direct match) and exclude
 
 ## Shared HTTP Pipeline
 
+### Bridge collaborators (v3.9.1)
+
+`BridgeResolutionService` coordinates requests and provider access. The scoring, rollup, and relationship components consume fetched entity data without making HTTP requests:
+
+| Internal component | Responsibility |
+|---|---|
+| `BridgeCandidateScorer` | Verified bridge matches, text candidates, scoring evidence, and ranking |
+| `BridgeCanonicalRollup` | Work/edition selection and P629/P747 evidence paths |
+| `BridgeRelationshipExtractor` | Related entities, series classification, and relationship provenance |
+| `BridgeEntityFacts` | Shared claim readers and property sets |
+| `BridgeDiagnosticsBuilder` | Accumulated diagnostics across resolution phases |
+
+The public bridge API, candidate formulas, tie-breaking, and relationship semantics are unchanged. The extraction is covered by public contract tests and the [offline performance harness](performance.md).
+
+### Provider access
+
 All Wikidata, Wikipedia, and Commons-capable calls go through one `ResilientHttpClient` instance per `WikidataReconciler`. The pipeline:
 
 - uses independent host limiters for `www.wikidata.org`, each `*.wikipedia.org` host, and `commons.wikimedia.org`
@@ -97,6 +113,16 @@ All Wikidata, Wikipedia, and Commons-capable calls go through one `ResilientHttp
 Wikipedia summaries use batched MediaWiki `action=query&prop=extracts|pageimages|info|description` requests instead of one REST summary call per article. Sitelink lookup still uses batched `wbgetentities`, and each summary result is mapped back to the originating QID.
 
 ## Design Decisions
+
+### Bounded resources (v3.8.0)
+
+The default response cache stores at most 1,024 entries and 64 MiB of UTF-16 key/response payloads. A dictionary, LRU linked list, and expiry-ordered set are updated atomically under a lock; expiry pruning and eviction remove entries from all three indexes. Custom limits are available through the cache constructor. Expiration is reclaimed on cache activity, with no background timer, and capacity remains bounded during idle periods.
+
+`Internal/BoundedAsync.cs` maintains a sliding window of at most `MaxConcurrency` pending tasks rather than creating one task per input. It preserves input indices, collects ordered results when requested, and cancels/observes outstanding work when the consumer stops or an operation fails. Reconciliation, author/person batches, Wikipedia fan-out, and multilingual search use this helper. Bridge resolution's existing sequential loops already bound execution and remain unchanged.
+
+Host limiters acquire concurrency capacity before spacing admissions under an asynchronous pacing gate. Elapsed time uses monotonic timestamps, and only a granted admission updates the last-start timestamp; cancelled waits cannot leave unused future reservations.
+
+### Existing design choices
 
 - **Zero external dependencies** — only `System.Text.Json` (built into .NET). No FuzzySharp, no Polly, no caching libraries.
 - **AOT compatible** — `IsAotCompatible` and `IsTrimmable` set in .csproj. All JSON serialization uses source-generated `JsonSerializerContext` (no reflection).

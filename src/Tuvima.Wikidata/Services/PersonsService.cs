@@ -191,25 +191,12 @@ public sealed class PersonsService
             3,
             Math.Max(1, _ctx.Options.WikidataRateLimit.MaxConcurrentRequests));
 
-        using var gate = new SemaphoreSlim(
-            Math.Min(uniqueRequests.Length, maxConcurrency),
-            Math.Min(uniqueRequests.Length, maxConcurrency));
-
-        var lookupTasks = uniqueRequests.Select(async pair =>
+        var lookups = await BoundedAsync.SelectAsync(uniqueRequests,
+            Math.Min(maxConcurrency, Math.Max(1, _ctx.Options.MaxConcurrency)), async (pair, token) =>
         {
-            await gate.WaitAsync(cancellationToken).ConfigureAwait(false);
-            try
-            {
-                var result = await SearchAsync(pair.Value, cancellationToken).ConfigureAwait(false);
-                return (pair.Key, Result: result);
-            }
-            finally
-            {
-                gate.Release();
-            }
-        }).ToArray();
-
-        var lookups = await Task.WhenAll(lookupTasks).ConfigureAwait(false);
+            var result = await SearchAsync(pair.Value, token).ConfigureAwait(false);
+            return (pair.Key, Result: result);
+        }, cancellationToken).ConfigureAwait(false);
         var resultsByKey = lookups.ToDictionary(
             item => item.Key,
             item => item.Result,

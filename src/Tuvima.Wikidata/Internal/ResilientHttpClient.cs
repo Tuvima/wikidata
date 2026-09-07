@@ -1,4 +1,3 @@
-using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Net;
 using System.Net.Http.Headers;
@@ -15,7 +14,11 @@ internal sealed class ResilientHttpClient : IDisposable
     private readonly WikidataReconcilerOptions _options;
     private readonly WikidataDiagnostics _diagnostics;
     private readonly HostRateLimiterRegistry _hostLimiters;
-    private readonly ConcurrentDictionary<string, Lazy<Task<string>>> _inFlight = new(StringComparer.Ordinal);
+    private readonly object _requestGate = new();
+    private readonly Dictionary<string, SharedRequest> _inFlight = new(StringComparer.Ordinal);
+    private readonly HashSet<SharedRequest> _activeRequests = [];
+    private bool _disposed;
+    private bool _limitersDisposed;
     private readonly Func<TimeSpan, CancellationToken, Task> _delayAsync;
     private readonly SemaphoreSlim? _legacyConcurrencyLimiter;
 
@@ -56,30 +59,102 @@ internal sealed class ResilientHttpClient : IDisposable
         CancellationToken cancellationToken,
         bool applyMaxLag = true)
     {
+        cancellationToken.ThrowIfCancellationRequested();
         var requestUrl = applyMaxLag ? AppendMaxLag(url) : url;
         var request = ProviderRequest.Create(requestUrl);
+        SharedRequest shared;
+        bool start;
+        lock (_requestGate)
+        {
+            ObjectDisposedException.ThrowIf(_disposed, this);
+            if (_options.EnableRequestCoalescing && _inFlight.TryGetValue(request.CacheKey.Key, out var existing))
+            {
+                shared = existing;
+                shared.Waiters++;
+                start = false;
+                _diagnostics.RecordCoalescedRequest();
+            }
+            else
+            {
+                shared = new SharedRequest();
+                _activeRequests.Add(shared);
+                if (_options.EnableRequestCoalescing)
+                    _inFlight.Add(request.CacheKey.Key, shared);
+                start = true;
+            }
+        }
 
-        if (!_options.EnableRequestCoalescing)
-            return await GetStringCoreAsync(request, cancellationToken).ConfigureAwait(false);
-
-        var lazy = _inFlight.GetOrAdd(
-            request.CacheKey.Key,
-            _ => new Lazy<Task<string>>(
-                () => GetStringCoreAsync(request, cancellationToken),
-                LazyThreadSafetyMode.ExecutionAndPublication));
-
-        if (lazy.IsValueCreated)
-            _diagnostics.RecordCoalescedRequest();
+        if (start)
+            _ = ExecuteSharedAsync(request, shared);
 
         try
         {
-            return await lazy.Value.WaitAsync(cancellationToken).ConfigureAwait(false);
+            return await shared.Completion.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            _diagnostics.RecordFailure(WikidataFailureKind.Cancelled, request.Endpoint, "The caller cancelled its provider request.");
+            throw new OperationCanceledException(cancellationToken);
         }
         finally
         {
-            if (lazy.IsValueCreated && lazy.Value.IsCompleted)
-                _inFlight.TryRemove(new KeyValuePair<string, Lazy<Task<string>>>(request.CacheKey.Key, lazy));
+            lock (_requestGate)
+            {
+                if (--shared.Waiters == 0)
+                {
+                    RemoveSharedRequest(request, shared);
+                    if (shared.Finished)
+                        shared.Cancellation.Dispose();
+                    else
+                        shared.Cancellation.Cancel();
+                }
+            }
         }
+    }
+
+    private async Task ExecuteSharedAsync(ProviderRequest request, SharedRequest shared)
+    {
+        string? result = null;
+        Exception? failure = null;
+        var token = shared.Cancellation.Token;
+        try
+        {
+            result = await GetStringCoreAsync(request, token).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            failure = ex;
+        }
+        finally
+        {
+            // Cleanup belongs to the operation, even if every caller stopped waiting.
+            lock (_requestGate)
+            {
+                shared.Finished = true;
+                RemoveSharedRequest(request, shared);
+                _activeRequests.Remove(shared);
+                if (shared.Waiters == 0)
+                    shared.Cancellation.Dispose();
+                DisposeLimitersIfIdle();
+            }
+        }
+
+        if (failure is OperationCanceledException)
+            shared.Completion.TrySetCanceled(token);
+        else if (failure is not null)
+        {
+            shared.Completion.TrySetException(failure);
+            // Observe failures when all callers have cancelled their waits.
+            _ = shared.Completion.Task.Exception;
+        }
+        else
+            shared.Completion.TrySetResult(result!);
+    }
+
+    private void RemoveSharedRequest(ProviderRequest request, SharedRequest shared)
+    {
+        if (_inFlight.TryGetValue(request.CacheKey.Key, out var current) && ReferenceEquals(current, shared))
+            _inFlight.Remove(request.CacheKey.Key);
     }
 
     private async Task<string> GetStringCoreAsync(ProviderRequest request, CancellationToken cancellationToken)
@@ -91,7 +166,7 @@ internal sealed class ResilientHttpClient : IDisposable
         if (cache is not null)
         {
             var cached = await cache.GetAsync(request.CacheKey, cancellationToken).ConfigureAwait(false);
-            if (cached is not null)
+            if (cached is not null && ProviderJson.IsValidCachedResponse(cached, request.Endpoint))
             {
                 _diagnostics.RecordCacheHit();
                 Log(request, attempt: 0, statusCode: null, latency: TimeSpan.Zero, fromCache: true, failureKind: null);
@@ -106,17 +181,29 @@ internal sealed class ResilientHttpClient : IDisposable
             TimeSpan? retryDelay = null;
             var stopwatch = Stopwatch.StartNew();
             HttpStatusCode? statusCode = null;
+            RetryConditionHeaderValue? retryAfter = null;
 
             try
             {
                 using var limiterLease = await WaitForLimiterAsync(request.Host, cancellationToken)
                     .ConfigureAwait(false);
 
+                using var attemptCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+                // HttpClient.Timeout ends at the headers when ResponseHeadersRead is used.
+                // Preserve a caller-supplied client's shorter timeout for the entire attempt.
+                var timeout = _options.Timeout;
+                if (_httpClient.Timeout != Timeout.InfiniteTimeSpan &&
+                    (timeout == Timeout.InfiniteTimeSpan || _httpClient.Timeout < timeout))
+                    timeout = _httpClient.Timeout;
+                attemptCancellation.CancelAfter(timeout);
+                var attemptToken = attemptCancellation.Token;
+
                 using var response = await _httpClient
-                    .GetAsync(request.Uri, HttpCompletionOption.ResponseHeadersRead, cancellationToken)
+                    .GetAsync(request.Uri, HttpCompletionOption.ResponseHeadersRead, attemptToken)
                     .ConfigureAwait(false);
 
                 statusCode = response.StatusCode;
+                retryAfter = response.Headers.RetryAfter;
                 if (response.StatusCode == HttpStatusCode.TooManyRequests)
                     _diagnostics.RecordRateLimitResponse();
 
@@ -142,7 +229,11 @@ internal sealed class ResilientHttpClient : IDisposable
                 }
                 else
                 {
-                    var body = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+                    var body = await response.Content.ReadAsStringAsync(attemptToken).ConfigureAwait(false);
+                    var providerError = ProviderJson.ValidateResponse(body, request.Endpoint);
+                    attemptToken.ThrowIfCancellationRequested();
+                    if (providerError is not null)
+                        throw new ProviderResponseException(providerError, response.StatusCode, request.Uri);
                     stopwatch.Stop();
                     _diagnostics.RecordRequest(request.Host, request.Endpoint, stopwatch.Elapsed);
                     Log(request, attempt, statusCode, stopwatch.Elapsed, fromCache: false, failureKind: null);
@@ -158,6 +249,24 @@ internal sealed class ResilientHttpClient : IDisposable
 
                     return body;
                 }
+            }
+            catch (ProviderResponseException ex) when (ex.Error.Retryable && attempt < _options.MaxRetries)
+            {
+                retryDelay = GetRetryDelay(retryAfter, attempt);
+                _diagnostics.RecordRetry();
+                stopwatch.Stop();
+                _diagnostics.RecordRequest(request.Host, request.Endpoint, stopwatch.Elapsed);
+                Log(request, attempt, statusCode, stopwatch.Elapsed, fromCache: false, ex.Error.Kind);
+            }
+            catch (ProviderResponseException ex)
+            {
+                var failure = new WikidataProviderException(ex.Error.Kind,
+                    $"The provider rejected {request.Endpoint}: {ex.Error.Code}.", ex.StatusCode, ex.RequestUri);
+                stopwatch.Stop();
+                _diagnostics.RecordRequest(request.Host, request.Endpoint, stopwatch.Elapsed);
+                _diagnostics.RecordFailure(failure.Kind, request.Endpoint, failure.Message);
+                Log(request, attempt, statusCode, stopwatch.Elapsed, fromCache: false, failure.Kind);
+                throw failure;
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
@@ -291,6 +400,8 @@ internal sealed class ResilientHttpClient : IDisposable
         {
             HttpStatusCode.NotFound => WikidataFailureKind.NotFound,
             HttpStatusCode.TooManyRequests => WikidataFailureKind.RateLimited,
+            HttpStatusCode.RequestTimeout => WikidataFailureKind.TransientNetworkFailure,
+            >= HttpStatusCode.BadRequest and < HttpStatusCode.InternalServerError => WikidataFailureKind.ProviderRejected,
             _ => WikidataFailureKind.TransientNetworkFailure
         };
 
@@ -319,7 +430,41 @@ internal sealed class ResilientHttpClient : IDisposable
         return $"{url}{separator}maxlag={_options.MaxLag}";
     }
 
-    public void Dispose() => _hostLimiters.Dispose();
+    public void Dispose()
+    {
+        lock (_requestGate)
+        {
+            if (_disposed) return;
+            _disposed = true;
+            foreach (var request in _activeRequests.ToArray())
+                request.Cancellation.Cancel();
+            DisposeLimitersIfIdle();
+        }
+    }
+
+    private void DisposeLimitersIfIdle()
+    {
+        if (_disposed && !_limitersDisposed && _activeRequests.Count == 0)
+        {
+            _limitersDisposed = true;
+            _hostLimiters.Dispose();
+        }
+    }
+
+    private sealed class SharedRequest
+    {
+        public CancellationTokenSource Cancellation { get; } = new();
+        public TaskCompletionSource<string> Completion { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public int Waiters { get; set; } = 1;
+        public bool Finished { get; set; }
+    }
+
+    private sealed class ProviderResponseException(ProviderError error, HttpStatusCode statusCode, Uri requestUri) : Exception
+    {
+        public ProviderError Error { get; } = error;
+        public HttpStatusCode StatusCode { get; } = statusCode;
+        public Uri RequestUri { get; } = requestUri;
+    }
 
     private sealed class LegacyLease : IDisposable
     {

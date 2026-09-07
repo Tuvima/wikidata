@@ -75,16 +75,10 @@ public sealed class AuthorsService
             };
         }
 
-        // Resolve names in parallel. The shared request sender enforces provider-safe
-        // host limits, while Task.WhenAll preserves input order in the result array.
-        var resolveTasks = new Task<ResolvedAuthor>[names.Count];
-        for (var i = 0; i < names.Count; i++)
-        {
-            resolveTasks[i] = ResolveSingleNameAsync(
-                names[i], request.WorkQidHint, request.DetectPseudonyms, lang, cancellationToken);
-        }
-
-        var resolved = await Task.WhenAll(resolveTasks).ConfigureAwait(false);
+        var resolved = await BoundedAsync.SelectAsync(names, _ctx.Options.MaxConcurrency,
+            (name, token) => ResolveSingleNameAsync(
+                name, request.WorkQidHint, request.DetectPseudonyms, lang, token), cancellationToken)
+            .ConfigureAwait(false);
 
         var additionalUnresolved = new List<string>(unresolved);
         foreach (var r in resolved)

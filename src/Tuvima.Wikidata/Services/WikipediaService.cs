@@ -126,17 +126,16 @@ public sealed class WikipediaService
             return [];
 
         var grouped = qidToLangTitle
-            .GroupBy(kvp => kvp.Value.Language, StringComparer.OrdinalIgnoreCase)
-            .Select(group =>
+            .GroupBy(kvp => kvp.Value.Language, StringComparer.OrdinalIgnoreCase).ToArray();
+        var fetched = await BoundedAsync.SelectAsync(grouped, _ctx.Options.MaxConcurrency,
+            (group, token) =>
             {
                 var titleToQid = group.ToDictionary(
                     kvp => kvp.Value.Title,
                     kvp => kvp.Key,
                     StringComparer.OrdinalIgnoreCase);
-                return FetchSummaryBatchesAsync(titleToQid, group.Key, includeLanguage: true, cancellationToken);
-            });
-
-        var fetched = await Task.WhenAll(grouped).ConfigureAwait(false);
+                return FetchSummaryBatchesAsync(titleToQid, group.Key, includeLanguage: true, token);
+            }, cancellationToken).ConfigureAwait(false);
         return fetched.SelectMany(s => s).ToList();
     }
 
@@ -404,13 +403,13 @@ public sealed class WikipediaService
 
         var result = new Dictionary<string, IReadOnlyList<WikipediaSection>>(StringComparer.OrdinalIgnoreCase);
 
-        var tasks = titleToQid.Select(async kvp =>
+        var fetched = await BoundedAsync.SelectAsync(titleToQid.ToArray(), _ctx.Options.MaxConcurrency, async (kvp, token) =>
         {
             try
             {
                 var url = $"https://{language}.wikipedia.org/w/api.php?action=parse" +
                           $"&page={Uri.EscapeDataString(kvp.Key)}&prop=tocdata&format=json";
-                var json = await _ctx.ResilientClient.GetStringAsync(url, cancellationToken)
+                var json = await _ctx.ResilientClient.GetStringAsync(url, token)
                     .ConfigureAwait(false);
                 var response = ProviderJson.Deserialize(
                     json,
@@ -444,9 +443,7 @@ public sealed class WikipediaService
                 // Skip on failure
             }
             return (Qid: kvp.Value, Sections: (IReadOnlyList<WikipediaSection>?)null);
-        });
-
-        var fetched = await Task.WhenAll(tasks).ConfigureAwait(false);
+        }, cancellationToken).ConfigureAwait(false);
         foreach (var item in fetched)
         {
             if (item.Sections is not null)
@@ -512,16 +509,14 @@ public sealed class WikipediaService
         if (pageTitle is null)
             return null;
 
-        var fetchTasks = sectionIndices.Select(async si =>
+        var results = await BoundedAsync.SelectAsync(sectionIndices, _ctx.Options.MaxConcurrency, async (si, token) =>
         {
-            var text = await FetchSectionText(pageTitle, si.Index, language, cancellationToken)
+            var text = await FetchSectionText(pageTitle, si.Index, language, token)
                 .ConfigureAwait(false);
             if (text is not null)
                 text = HtmlTextExtractor.StripLeadingHeading(text);
             return (si.Title, Content: string.IsNullOrWhiteSpace(text) ? null : text!.Trim());
-        });
-
-        var results = await Task.WhenAll(fetchTasks).ConfigureAwait(false);
+        }, cancellationToken).ConfigureAwait(false);
 
         var content = results
             .Where(r => r.Content is not null)

@@ -1,0 +1,123 @@
+{
+  "method": "Sequential Release net10.0 runs; DOTNET_TieredCompilation=0; local fixtures; 30 warm-ups and 7 samples of 100 operations per workload",
+  "baselineVersion": "3.9.0 before bridge extraction",
+  "refactoredVersion": "3.9.1",
+  "before": {
+    "runtime": ".NET 10.0.8",
+    "os": "Microsoft Windows 10.0.26200",
+    "architecture": "X64",
+    "iterations": 100,
+    "samples": 7,
+    "contractSha256": "7710A115AB96B64BC90A99D2108769F8C99054B67D20FEA9BE543D2E1A9D7F19",
+    "publicApiSha256": "819F58D4893C2D10A86ADFA051DE44550B2286E4CAB24A2EB23FC6C7B8007583",
+    "measurements": [
+      {
+        "name": "text-reconciliation",
+        "medianMilliseconds": 0.290704,
+        "minMilliseconds": 0.253461,
+        "maxMilliseconds": 0.401828,
+        "medianAllocatedBytes": 75340.48,
+        "checksum": 1400
+      },
+      {
+        "name": "reconciliation-batch-20",
+        "medianMilliseconds": 3.940782,
+        "minMilliseconds": 3.3906970000000003,
+        "maxMilliseconds": 4.845834,
+        "medianAllocatedBytes": 621195.12,
+        "checksum": 14000
+      },
+      {
+        "name": "bridge-id-rollup",
+        "medianMilliseconds": 0.667782,
+        "minMilliseconds": 0.6228589999999999,
+        "maxMilliseconds": 1.015992,
+        "medianAllocatedBytes": 131447.44,
+        "checksum": 700
+      },
+      {
+        "name": "bridge-batch-20",
+        "medianMilliseconds": 12.324103000000001,
+        "minMilliseconds": 9.875494999999999,
+        "maxMilliseconds": 16.472272,
+        "medianAllocatedBytes": 2227726.32,
+        "checksum": 14000
+      },
+      {
+        "name": "graph-path-1000-nodes",
+        "medianMilliseconds": 1.046311,
+        "minMilliseconds": 0.912384,
+        "maxMilliseconds": 1.144829,
+        "medianAllocatedBytes": 551893.84,
+        "checksum": 700
+      },
+      {
+        "name": "graph-build-1000-nodes",
+        "medianMilliseconds": 0.560445,
+        "minMilliseconds": 0.500075,
+        "maxMilliseconds": 0.616631,
+        "medianAllocatedBytes": 432605.84,
+        "checksum": 699300
+      }
+    ]
+  },
+  "after": {
+    "runtime": ".NET 10.0.8",
+    "os": "Microsoft Windows 10.0.26200",
+    "architecture": "X64",
+    "iterations": 100,
+    "samples": 7,
+    "contractSha256": "7710A115AB96B64BC90A99D2108769F8C99054B67D20FEA9BE543D2E1A9D7F19",
+    "publicApiSha256": "819F58D4893C2D10A86ADFA051DE44550B2286E4CAB24A2EB23FC6C7B8007583",
+    "measurements": [
+      {
+        "name": "text-reconciliation",
+        "medianMilliseconds": 0.431735,
+        "minMilliseconds": 0.33463,
+        "maxMilliseconds": 0.503106,
+        "medianAllocatedBytes": 75340.48,
+        "checksum": 1400
+      },
+      {
+        "name": "reconciliation-batch-20",
+        "medianMilliseconds": 3.932664,
+        "minMilliseconds": 3.601424,
+        "maxMilliseconds": 5.289649,
+        "medianAllocatedBytes": 621195.12,
+        "checksum": 14000
+      },
+      {
+        "name": "bridge-id-rollup",
+        "medianMilliseconds": 0.576303,
+        "minMilliseconds": 0.5153329999999999,
+        "maxMilliseconds": 0.648273,
+        "medianAllocatedBytes": 131447.44,
+        "checksum": 700
+      },
+      {
+        "name": "bridge-batch-20",
+        "medianMilliseconds": 12.628997,
+        "minMilliseconds": 10.95693,
+        "maxMilliseconds": 13.812011,
+        "medianAllocatedBytes": 2227726.32,
+        "checksum": 14000
+      },
+      {
+        "name": "graph-path-1000-nodes",
+        "medianMilliseconds": 0.7446550000000001,
+        "minMilliseconds": 0.681156,
+        "maxMilliseconds": 0.957573,
+        "medianAllocatedBytes": 551893.84,
+        "checksum": 700
+      },
+      {
+        "name": "graph-build-1000-nodes",
+        "medianMilliseconds": 0.419178,
+        "minMilliseconds": 0.345974,
+        "maxMilliseconds": 0.48727,
+        "medianAllocatedBytes": 432605.84,
+        "checksum": 699300
+      }
+    ]
+  }
+}

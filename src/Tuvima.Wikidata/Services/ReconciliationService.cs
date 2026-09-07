@@ -131,7 +131,7 @@ public sealed class ReconciliationService
 
             var typeResult = await _ctx.TypeChecker.CheckAsync(
                 entity, effectiveTypes, request.ExcludeTypes,
-                subclassResolver, language, cancellationToken).ConfigureAwait(false);
+                subclassResolver, language, cancellationToken, request.TypeHierarchyDepth).ConfigureAwait(false);
 
             if (typeResult == TypeMatchResult.Excluded || typeResult == TypeMatchResult.NotMatched)
                 continue;
@@ -224,7 +224,8 @@ public sealed class ReconciliationService
             request.ExcludeTypes,
             subclassResolver,
             language,
-            cancellationToken).ConfigureAwait(false);
+            cancellationToken,
+            request.TypeHierarchyDepth).ConfigureAwait(false);
 
         if (typeResult == TypeMatchResult.Excluded || typeResult == TypeMatchResult.NotMatched)
             return [];
@@ -263,37 +264,28 @@ public sealed class ReconciliationService
 
     /// <summary>
     /// Reconciles multiple queries in parallel, respecting the configured concurrency limit.
+    /// Results preserve input order. Failure or cancellation stops pending work.
     /// </summary>
     public async Task<IReadOnlyList<IReadOnlyList<ReconciliationResult>>> ReconcileBatchAsync(
         IReadOnlyList<ReconciliationRequest> requests, CancellationToken cancellationToken = default)
     {
-        var tasks = requests.Select(request => ReconcileAsync(request, cancellationToken));
-        return await Task.WhenAll(tasks).ConfigureAwait(false);
+        ArgumentNullException.ThrowIfNull(requests);
+        return await BoundedAsync.SelectAsync(requests, _ctx.Options.MaxConcurrency,
+            (request, token) => ReconcileAsync(request, token), cancellationToken).ConfigureAwait(false);
     }
 
     /// <summary>
     /// Reconciles multiple queries as a streaming async enumerable.
+    /// Starts a bounded window of work and yields completed items with their input indices.
+    /// Disposing the enumerator early cancels and observes outstanding work.
     /// </summary>
     public async IAsyncEnumerable<(int Index, IReadOnlyList<ReconciliationResult> Results)> ReconcileBatchStreamAsync(
         IReadOnlyList<ReconciliationRequest> requests, [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
-        var tasks = new Task<(int Index, IReadOnlyList<ReconciliationResult> Results)>[requests.Count];
-
-        for (var i = 0; i < requests.Count; i++)
-        {
-            var index = i;
-            var request = requests[i];
-            tasks[i] = ReconcileWithIndexAsync(request, index, cancellationToken);
-        }
-
-        var remaining = new HashSet<Task<(int Index, IReadOnlyList<ReconciliationResult> Results)>>(tasks);
-
-        while (remaining.Count > 0)
-        {
-            var completed = await Task.WhenAny(remaining).ConfigureAwait(false);
-            remaining.Remove(completed);
-            yield return await completed.ConfigureAwait(false);
-        }
+        ArgumentNullException.ThrowIfNull(requests);
+        await foreach (var item in BoundedAsync.StreamAsync(requests, _ctx.Options.MaxConcurrency,
+            (request, token) => ReconcileAsync(request, token), cancellationToken).ConfigureAwait(false))
+            yield return (item.Index, item.Result);
     }
 
     /// <summary>
@@ -342,13 +334,6 @@ public sealed class ReconciliationService
     public Task<IReadOnlyList<SuggestResult>> SuggestTypesAsync(
         string prefix, int limit = 7, string? language = null, CancellationToken cancellationToken = default)
         => SuggestAsync(prefix, limit, language, cancellationToken);
-
-    private async Task<(int Index, IReadOnlyList<ReconciliationResult> Results)> ReconcileWithIndexAsync(
-        ReconciliationRequest request, int index, CancellationToken cancellationToken)
-    {
-        var results = await ReconcileAsync(request, cancellationToken).ConfigureAwait(false);
-        return (index, results);
-    }
 
     private static int CompareQids(string a, string b)
     {

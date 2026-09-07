@@ -103,49 +103,28 @@ internal sealed class WikidataSearchClient
         var searchQuery = query.Length > 250 ? query[..250] : query;
         var fetchLimit = Math.Min(2 * limit, 50);
 
-        var fullTextTask = FullTextSearchAsync(searchQuery, fetchLimit, cancellationToken);
-        var autocompleteTasks = effectiveLanguages
-            .Select(lang => SearchEntitiesAsync(searchQuery, lang, fetchLimit, cancellationToken))
-            .ToArray();
-
-        Task<List<string>>? strippedFullTextTask = null;
-        Task<List<string>>[] strippedAutocompleteTasks = [];
-
+        var queries = new List<string> { searchQuery };
         if (diacriticInsensitive)
         {
             var stripped = FuzzyMatcher.RemoveDiacritics(searchQuery);
             if (!string.Equals(stripped, searchQuery, StringComparison.Ordinal))
-            {
-                strippedFullTextTask = FullTextSearchAsync(stripped, fetchLimit, cancellationToken);
-                strippedAutocompleteTasks = effectiveLanguages
-                    .Select(lang => SearchEntitiesAsync(stripped, lang, fetchLimit, cancellationToken))
-                    .ToArray();
-            }
+                queries.Add(stripped);
         }
 
-        var tasks = new List<Task>(autocompleteTasks.Length + strippedAutocompleteTasks.Length + 2)
-        {
-            fullTextTask
-        };
-        tasks.AddRange(autocompleteTasks);
-        if (strippedFullTextTask is not null)
-            tasks.Add(strippedFullTextTask);
-        tasks.AddRange(strippedAutocompleteTasks);
-
-        await Task.WhenAll(tasks).ConfigureAwait(false);
+        // Preserve full-text-first merge order without starting a task for every language.
+        var searches = queries.Select(q => (Query: q, Language: (string?)null)).ToList();
+        searches.AddRange(queries.SelectMany(q => effectiveLanguages.Select(lang => (q, (string?)lang))));
+        var results = await BoundedAsync.SelectAsync(searches, _options.MaxConcurrency,
+            (search, token) => search.Language is null
+                ? FullTextSearchAsync(search.Query, fetchLimit, token)
+                : SearchEntitiesAsync(search.Query, search.Language, fetchLimit, token), cancellationToken)
+            .ConfigureAwait(false);
 
         var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var merged = new List<string>();
 
-        AddUnique(await fullTextTask.ConfigureAwait(false), seen, merged);
-        if (strippedFullTextTask is not null)
-            AddUnique(await strippedFullTextTask.ConfigureAwait(false), seen, merged);
-
-        foreach (var task in autocompleteTasks)
-            AddUnique(await task.ConfigureAwait(false), seen, merged);
-
-        foreach (var task in strippedAutocompleteTasks)
-            AddUnique(await task.ConfigureAwait(false), seen, merged);
+        foreach (var result in results)
+            AddUnique(result, seen, merged);
 
         return merged;
     }
